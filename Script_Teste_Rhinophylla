@@ -1,0 +1,900 @@
+
+# -----------------------------
+library(biomod2)
+library(sp)
+library(raster)
+library(terra)
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(patchwork)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(viridis)
+
+set.seed(42)
+
+# -----------------------------
+output_dir <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Resultados_ensemble"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+cat("Output:", output_dir, "\n")
+
+# ======================================================
+occ_csv <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Planilha Rhinophylla_Final_08.05.2026.csv"
+occ <- read.csv(occ_csv)
+
+coords_raw <- occ %>%
+  dplyr::select(longitude, latitude) %>%
+  dplyr::rename(x = longitude, y = latitude) %>%
+  dplyr::filter(is.finite(x), is.finite(y))
+
+cat("Ocorrências (brutas):", nrow(coords_raw), "\n")
+
+thin_points_min_dist <- function(df_xy, min_dist_m = 20000, crs_ll = 4326, crs_m = 3857) {
+  stopifnot(all(c("x","y") %in% names(df_xy)))
+  if (nrow(df_xy) <= 1) return(df_xy)
+
+  df_xy <- df_xy[sample.int(nrow(df_xy)), , drop = FALSE]
+
+  pts_ll <- sf::st_as_sf(df_xy, coords = c("x","y"), crs = crs_ll, remove = FALSE)
+  pts_m  <- sf::st_transform(pts_ll, crs_m)
+
+  keep_idx <- integer(0)
+  for (i in seq_len(nrow(pts_m))) {
+    if (length(keep_idx) == 0) {
+      keep_idx <- c(keep_idx, i)
+      next
+    }
+    near <- sf::st_is_within_distance(pts_m[i, ], pts_m[keep_idx, ], dist = min_dist_m)[[1]]
+    if (length(near) == 0) keep_idx <- c(keep_idx, i)
+  }
+
+  df_xy[keep_idx, , drop = FALSE]
+}
+
+coords <- thin_points_min_dist(coords_raw, min_dist_m = 50000) %>%
+  dplyr::arrange(x, y)
+
+cat("Ocorrências (após thinning 50 km):", nrow(coords), "\n")
+
+resp.var <- rep(1, nrow(coords))
+
+write.csv(
+  data.frame(species="Rhinophylla", lon=coords$x, lat=coords$y),
+  file.path(output_dir, "dados_ocorrencia_teste110.csv"),
+  row.names = FALSE
+)
+
+
+# ======================================================
+ext_america <- raster::extent(-170, -26, -56, 72)
+
+prep_layer <- function(path, ref = NULL, method = "bilinear") {
+  if (!file.exists(path)) stop("Arquivo não encontrado: ", path)
+  r <- raster::raster(path)
+  r <- raster::crop(r, ext_america)
+  if (!is.null(ref)) r <- raster::resample(r, ref, method = method)
+  r
+}
+
+BIO7 <- prep_layer("C:/Users/Administrador/Desktop/Gab/Mod/wc2.1_2.5m_bio/wc2.1_2.5m_bio_7.tif")
+
+vaporpressure <- prep_layer(
+  "C:/Users/Administrador/Desktop/Gab/Mod/meanvaporpressure.tif",
+  ref = BIO7
+)
+
+BIO12 <- prep_layer(
+  "C:/Users/Administrador/Desktop/Gab/Mod/wc2.1_2.5m_bio/wc2.1_2.5m_bio_12.tif",
+  ref = BIO7
+)
+
+elevation <- prep_layer(
+  "C:/Users/Administrador/Desktop/GAB/Mod/output_GMRT.tif",
+  ref = BIO7
+)
+
+elevation[elevation < 0] <- NA
+
+env <- raster::stack(BIO7, elevation, BIO12, vaporpressure)
+names(env) <- c("BIO7", "Elevation", "BIO12", "VaporPressure")
+
+cat("Layers:", paste(names(env), collapse = ", "), "\n")
+
+raster::writeRaster(BIO7,         file.path(output_dir, "BIO7.tif"), overwrite = TRUE)
+raster::writeRaster(elevation,    file.path(output_dir, "Elevation.tif"), overwrite = TRUE)
+raster::writeRaster(BIO12,        file.path(output_dir, "BIO12.tif"), overwrite = TRUE)
+raster::writeRaster(vaporpressure,file.path(output_dir, "VaporPressure.tif"), overwrite = TRUE)
+
+# ======================================================
+biomod_data <- BIOMOD_FormatingData(
+  resp.var = resp.var,
+  expl.var = env,
+  resp.xy = coords,
+  PA.nb.rep = 10,
+  PA.nb.absences = 1000,
+  PA.strategy = "random",
+  filter.raster = TRUE,
+  resp.name = "Vampyrum.spectrum"
+)
+
+saveRDS(biomod_data, file.path(output_dir, "biomod_data_teste110.rds"))
+
+# ======================================================
+myOptions <- BIOMOD_ModelingOptions(
+  RF  = list(n.trees = 500, mtry = 2, nodesize = 20, maxnodes = 20),
+  GBM = list(n.trees = 2000, interaction.depth = 2, shrinkage = 0.005,
+             bag.fraction = 0.5, n.minobsinnode = 10),
+  MAXENT = list(betamultiplier = 3, features = "lq"),
+  GLM = list(type = "simple", test = "BIC"),
+  GAM = list(k = 3)
+)
+
+models <- BIOMOD_Modeling(
+  biomod_data,
+  models = c("GLM","GAM","GBM","RF","MAXENT"),
+  bm.options = myOptions,
+  CV.strategy = "block",
+  CV.nb.rep = 5,
+  prevalence = 0.5,
+  metric.eval = c("TSS","ROC"),
+  var.import = 3
+)
+
+saveRDS(models, file.path(output_dir, "models_teste110.rds"))
+
+# ======================================================
+ensemble <- BIOMOD_EnsembleModeling(
+  bm.mod = models,
+  models.chosen = "all",
+  em.by = "all",
+  em.algo = c("EMmean"),
+  metric.select = c("TSS","ROC"),
+  metric.select.thresh = c(0.5, 0.7),
+  var.import = 3
+)
+
+saveRDS(ensemble, file.path(output_dir, "ensemble_teste110.rds"))
+
+# ======================================================
+ensemble_proj <- BIOMOD_EnsembleForecasting(
+  bm.em = ensemble,
+  proj.name = "current_teste110",
+  new.env = env
+)
+saveRDS(ensemble_proj, file.path(output_dir, "ensemble_proj_teste110.rds"))
+
+pred_obj <- get_predictions(ensemble_proj)
+
+ensemble_raster_single <- tryCatch(terra::rast(pred_obj)[[1]], error = function(e) NULL)
+
+if (is.null(ensemble_raster_single) || !terra::hasValues(ensemble_raster_single)) {
+  rs <- tryCatch(raster::stack(pred_obj), error = function(e) NULL)
+  if (!is.null(rs)) ensemble_raster_single <- terra::rast(rs)[[1]]
+}
+
+if (is.null(ensemble_raster_single) || !terra::hasValues(ensemble_raster_single)) {
+  stop("Não consegui obter raster do ensemble com valores. Veja class/str de get_predictions(ensemble_proj).")
+}
+
+terra::writeRaster(
+  ensemble_raster_single,
+  file.path(output_dir, "ensemble_suitability_teste110.tif"),
+  overwrite = TRUE
+)
+
+
+# ======================================================
+
+ev_models_raw <- get_evaluations(models)
+ev_models_df  <- as.data.frame(ev_models_raw)
+
+cat("Colunas disponíveis em ev_models_df:\n")
+print(names(ev_models_df))
+
+metric_threshold <- "TSS"   # pode trocar para "ROC" se quiser, mas TSS é mais comum para corte binário
+
+possible_cutoff_cols <- c("cutoff", "Cutoff", "threshold", "Threshold")
+cutoff_col <- possible_cutoff_cols[possible_cutoff_cols %in% names(ev_models_df)]
+
+if (length(cutoff_col) == 0) {
+  stop("Não encontrei coluna de cutoff/threshold em get_evaluations(models). Rode print(names(ev_models_df)) e verifique o nome exato.")
+}
+
+cutoff_col <- cutoff_col[1]
+
+ev_metric <- ev_models_df %>%
+  dplyr::filter(metric.eval == metric_threshold)
+
+if (nrow(ev_metric) == 0) {
+  stop("Não encontrei linhas para a métrica escolhida em ev_models_df.")
+}
+
+if ("validation" %in% names(ev_metric)) {
+  ev_metric <- ev_metric %>%
+    dplyr::filter(is.finite(validation), !is.na(validation))
+}
+
+
+threshold_value <- median(ev_metric[[cutoff_col]], na.rm = TRUE)
+
+if (!is.finite(threshold_value)) {
+  stop("O threshold calculado ficou NA/Inf. Verifique a coluna de cutoff.")
+}
+
+cat("Threshold automático escolhido (", metric_threshold, "): ", threshold_value, "\n", sep = "")
+
+binary_raster <- ensemble_raster_single >= threshold_value
+
+binary_raster <- ifel(binary_raster, 1, 0)
+
+terra::writeRaster(
+  binary_raster,
+  file.path(output_dir, paste0("ensemble_binary_", metric_threshold, ".tif")),
+  overwrite = TRUE
+)
+
+writeLines(
+  paste0("Threshold usado (", metric_threshold, ") = ", threshold_value),
+  con = file.path(output_dir, paste0("threshold_", metric_threshold, ".txt"))
+)
+
+# ======================================================
+ev_models <- get_evaluations(models)
+df_models <- ev_models %>%
+  dplyr::filter(metric.eval %in% c("TSS","ROC")) %>%
+  dplyr::transmute(Modelo = algo, Metrica = metric.eval, Valor = validation) %>%
+  dplyr::filter(is.finite(Valor), !is.na(Valor))
+
+ev_ens <- get_evaluations(ensemble)
+df_ens <- ev_ens %>%
+  dplyr::filter(algo == "EMmean", metric.eval %in% c("TSS","ROC")) %>%
+  dplyr::transmute(Metrica = metric.eval, Valor = calibration) %>%
+  dplyr::filter(is.finite(Valor), !is.na(Valor))
+
+ens_tss <- df_ens %>% filter(Metrica=="TSS") %>% pull(Valor)
+ens_roc <- df_ens %>% filter(Metrica=="ROC") %>% pull(Valor)
+ens_tss <- ifelse(length(ens_tss) > 0, ens_tss[1], NA_real_)
+ens_roc <- ifelse(length(ens_roc) > 0, ens_roc[1], NA_real_)
+
+# ======================================================
+importance <- as.data.frame(get_variables_importance(ensemble)) %>%
+  group_by(expl.var) %>%
+  summarise(importance = mean(var.imp, na.rm = TRUE), .groups="drop") %>%
+  rename(var = expl.var)
+
+write.csv(importance, file.path(output_dir, "importance_teste110.csv"), row.names = FALSE)
+
+importance_plot <- ggplot(
+  importance %>% arrange(desc(importance)),
+  aes(x = reorder(var, importance), y = importance)
+) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = sprintf("%.3f", importance)),
+            hjust = -0.15, size = 3.5) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  theme_minimal() +
+  labs(title="Variable Importance (Ensemble)", x="", y="Importance") +
+  theme(plot.title = element_text(face="bold", hjust=0.5))
+
+# ======================================================
+rep_id <- 1
+pa_colname <- paste0("PA", rep_id)
+
+if (!("PA.table" %in% slotNames(biomod_data))) stop("biomod_data não tem PA.table.")
+pa_tab <- biomod_data@PA.table
+if (is.null(pa_tab) || nrow(pa_tab) == 0) stop("PA.table vazio.")
+
+if (!is.null(colnames(pa_tab)) && (pa_colname %in% colnames(pa_tab))) {
+  pa_vec <- pa_tab[, pa_colname]
+} else {
+  pa_vec <- pa_tab[, 1]
+  warning("Coluna ", pa_colname, " não encontrada. Usando a primeira coluna de PA.table.")
+}
+
+abs_idx <- which(is.finite(pa_vec) & pa_vec == 0)
+if (length(abs_idx) == 0) stop("Não encontrei pseudo-ausências (0) na PA.table.")
+
+pa_pts <- biomod_data@coord[abs_idx, , drop = FALSE]
+pa_pts <- as.data.frame(pa_pts)
+colnames(pa_pts) <- c("x","y")
+cat("Pseudo-ausências (rep", rep_id, "):", nrow(pa_pts), "\n")
+
+# ======================================================
+as_xy_df <- function(obj) {
+  df <- as.data.frame(obj)
+
+  if (all(c("x","y") %in% names(df))) return(df[, c("x","y"), drop=FALSE])
+  if (all(c("lon","lat") %in% names(df))) {
+    out <- df[, c("lon","lat"), drop=FALSE]; names(out) <- c("x","y"); return(out)
+  }
+  if (all(c("longitude","latitude") %in% names(df))) {
+    out <- df[, c("longitude","latitude"), drop=FALSE]; names(out) <- c("x","y"); return(out)
+  }
+
+  num_cols <- which(sapply(df, is.numeric))
+  if (length(num_cols) >= 2) {
+    out <- df[, num_cols[1:2], drop=FALSE]
+    names(out) <- c("x","y")
+    warning("Coords sem nomes padrão; usei as 2 primeiras colunas numéricas como x,y.")
+    return(out)
+  }
+
+  stop("Não consegui obter coordenadas x,y.")
+}
+
+as_points_vect <- function(xy_df, crs_str) {
+  xy_df <- as.data.frame(xy_df)
+  terra::vect(xy_df, geom = c("x","y"), crs = crs_str)
+}
+
+make_var_panel <- function(r, varname, coords_obj, pa_obj, imp_df) {
+
+  rr <- terra::rast(r)
+  crs_r <- terra::crs(rr)
+  if (is.na(crs_r) || crs_r == "") crs_r <- "EPSG:4326"
+
+  coords_xy <- as_xy_df(coords_obj)
+  pa_xy     <- as_xy_df(pa_obj)
+
+  coords_v  <- as_points_vect(coords_xy, crs_r)
+  pa_v      <- as_points_vect(pa_xy, crs_r)
+
+  imp_val <- imp_df %>% dplyr::filter(var == varname) %>% dplyr::pull(importance)
+  imp_txt <- ifelse(length(imp_val)>0, sprintf(" | Imp: %.3f", imp_val[1]), " | Imp: NA")
+
+  rr_crop <- tryCatch(terra::crop(rr, terra::ext(-120, -30, -60, 30)), error=function(e) NULL)
+  rr_use <- rr_crop
+  if (is.null(rr_use) || !terra::hasValues(rr_use)) rr_use <- rr
+
+  r_df <- as.data.frame(rr_use, xy=TRUE, na.rm=TRUE)
+  colnames(r_df)[3] <- "val"
+
+  map <- ggplot() +
+    geom_raster(data = r_df, aes(x=x, y=y, fill=val)) +
+    geom_point(data = coords_xy, aes(x = x, y = y),
+               color = "red", size = 0.6, alpha = 0.7) +
+    scale_fill_viridis_c(option="viridis", name=varname) +
+    coord_sf(expand = FALSE) +
+    theme_minimal() +
+    labs(title = paste0(varname, imp_txt))
+
+  pres_vals <- terra::extract(rr, coords_v)[,2]
+  pa_vals   <- terra::extract(rr, pa_v)[,2]
+
+  df <- data.frame(
+    Value = c(pres_vals, pa_vals),
+    Group = c(rep("Presence", length(pres_vals)),
+              rep("Pseudo-absence", length(pa_vals)))
+  ) %>% dplyr::filter(is.finite(Value), !is.na(Value))
+
+  dist <- ggplot(df, aes(Group, Value, fill=Group)) +
+    geom_violin(alpha=0.35, trim=TRUE, color=NA) +
+    geom_boxplot(width=0.25, outlier.size=1) +
+    theme_minimal() +
+    labs(title=paste("Distribution –", varname), x="", y="") +
+    theme(legend.position="none")
+
+  map | dist
+}
+
+var_panels <- lapply(names(env), function(v) {
+  make_var_panel(env[[v]], v, coords, pa_pts, importance)
+})
+names(var_panels) <- names(env)
+
+vars_panel <- wrap_plots(var_panels, ncol=2) +
+  plot_annotation(
+    title="Environmental Predictors: Map + Distribution (Presence × Pseudo-absence)",
+    theme = theme(plot.title = element_text(face="bold", hjust=0.5))
+  )
+
+# ======================================================
+countries <- rnaturalearth::ne_countries(scale="medium", returnclass="sf")
+pres_coords <- data.frame(lon = coords$x, lat = coords$y)
+
+target_ext <- terra::ext(-120, -30, -60, 30)
+ens_crop <- tryCatch(terra::crop(ensemble_raster_single, target_ext), error=function(e) NULL)
+use_r <- ens_crop
+if (is.null(use_r) || !terra::hasValues(use_r)) use_r <- ensemble_raster_single
+
+ens_df <- as.data.frame(use_r, xy=TRUE, na.rm=TRUE)
+colnames(ens_df)[3] <- "Suitability"
+
+if (!is.null(ens_crop) && terra::hasValues(ens_crop)) {
+  xlim_use <- c(-120, -30); ylim_use <- c(-60, 30)
+} else {
+  e <- terra::ext(use_r)
+  xlim_use <- c(e$xmin, e$xmax); ylim_use <- c(e$ymin, e$ymax)
+}
+
+suitability_map <- ggplot() +
+  geom_raster(data = ens_df, aes(x=x, y=y, fill=Suitability)) +
+  geom_sf(data = countries, fill=NA, color="black", linewidth=0.2) +
+  geom_point(data = pres_coords, aes(x=lon, y=lat), color="black", size=1, alpha=0.6) +
+  scale_fill_viridis_c(option="plasma", name="Suitability") +
+  coord_sf(xlim=xlim_use, ylim=ylim_use, expand=FALSE) +
+  theme_minimal() +
+  labs(title="Habitat Suitability Map – Ensemble") +
+  theme(plot.title = element_text(face="bold", hjust=0.5))
+
+plot_metric <- function(metric, lim, ens_val) {
+  p <- ggplot(df_models %>% filter(Metrica==metric),
+              aes(Modelo, Valor, fill=Modelo)) +
+    geom_violin(alpha=0.4, trim=TRUE, color=NA) +
+    geom_boxplot(width=0.3, outlier.size=1) +
+    geom_hline(yintercept=lim, linetype="dashed", color="red") +
+    theme_minimal() +
+    coord_cartesian(ylim=c(0,1)) +
+    theme(legend.position="none") +
+    labs(title=metric, x="Modelo", y=metric)+
+    theme(
+      plot.title = element_text(size = 18, face = "bold"),
+      axis.title = element_text(size = 16),
+      axis.text = element_text(size = 14),
+      strip.text = element_text(size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 12)
+      )
+
+  if (is.finite(ens_val)) {
+    p <- p +
+      geom_hline(yintercept=ens_val, color="blue", linewidth=1.1) +
+      annotate("text", x=Inf, y=ens_val,
+               label = sprintf("Ensemble = %.3f", ens_val),
+               hjust=1.05, vjust=-0.4, color="blue", size=3.5)
+  }
+  p
+}
+
+tss_plot <- plot_metric("TSS", 0.7, ens_tss)
+roc_plot <- plot_metric("ROC", 0.8, ens_roc)
+evaluation_panel <- tss_plot | roc_plot
+
+
+binary_crop <- tryCatch(terra::crop(binary_raster, target_ext), error=function(e) NULL)
+use_bin <- binary_crop
+if (is.null(use_bin) || !terra::hasValues(use_bin)) use_bin <- binary_raster
+
+bin_df <- as.data.frame(use_bin, xy = TRUE, na.rm = TRUE)
+colnames(bin_df)[3] <- "Binary"
+
+binary_map <- ggplot() +
+  geom_raster(data = bin_df, aes(x = x, y = y, fill = factor(Binary))) +
+  geom_sf(data = countries, fill = NA, color = "black", linewidth = 0.2) +
+  geom_point(data = pres_coords, aes(x = lon, y = lat), color = "black", size = 1, alpha = 0.6) +
+  scale_fill_manual(
+    values = c("0" = "grey85", "1" = "darkgreen"),
+    name = "Prediction",
+    labels = c("0" = "Unsuitable", "1" = "Suitable")
+  ) +
+  coord_sf(xlim = xlim_use, ylim = ylim_use, expand = FALSE) +
+  theme_minimal() +
+  labs(title = paste0("Binary suitability map (threshold = ", round(threshold_value, 3), ")")) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+combined_map <- suitability_map | binary_map
+print(combined_map)
+
+
+# ======================================================
+final_panel <- (suitability_map | importance_plot) /
+  vars_panel /
+  evaluation_panel +
+  plot_annotation(
+    title="title = PANEL – Ecological Niche Modeling",
+    theme = theme(plot.title = element_text(size=14, face="bold"))
+  )
+
+out_panel <- file.path(output_dir, "04_Painel_INGLES_Final_COMPLETO_OFICIAL_teste110.png")
+cat("Salvando:", out_panel, "\n")
+
+ok <- tryCatch({
+  ggsave(out_panel, plot = final_panel, width=22, height=24, units="in", dpi=300, limitsize=FALSE)
+  TRUE
+}, error=function(e) {
+  message("ggsave falhou: ", e$message)
+  FALSE
+})
+
+if (!ok) {
+  message("Fallback png() ...")
+  png(out_panel, width=22, height=24, units="in", res=300)
+  print(final_panel)
+  dev.off()
+}
+
+cat("Concluído. Arquivos em:", output_dir, "\n")
+
+final_panel_continuous <- (suitability_map | importance_plot) /
+  vars_panel /
+  evaluation_panel +
+  plot_annotation(
+    title="PANEL – Ecological Niche Modeling",
+    theme = theme(plot.title = element_text(size=14, face="bold"))
+  )
+
+final_panel_binary <- (combined_map | importance_plot) /
+  vars_panel /
+  evaluation_panel +
+  plot_annotation(
+    title="PANEL – Ecological Niche Modeling",
+    theme = theme(plot.title = element_text(size=14, face="bold"))
+  )
+
+out_panel_cont <- file.path(output_dir, "04_Painel_INGLES_Final_CONTINUOUS_teste110.png")
+out_panel_bin  <- file.path(output_dir, "04_Painel_INGLES_Final_BINARIO_COMPLETO_OFICIAL_teste110.png")
+
+ggsave(out_panel_cont, plot = final_panel_continuous, width=22, height=24, units="in", dpi=300, limitsize=FALSE)
+ggsave(out_panel_bin,  plot = final_panel_binary,     width=22, height=24, units="in", dpi=300, limitsize=FALSE)
+
+
+save_plot_png_tif(binary_map,   "01b_binary_map",    w = 12, h = 8)
+save_plot_png_tif(combined_map, "01c_combined_maps", w = 16, h = 8)
+
+# ======================================================
+parts_dir <- file.path(output_dir, "panel_parts")
+dir.create(parts_dir, recursive = TRUE, showWarnings = FALSE)
+
+save_plot_png_tif <- function(p, filename_base, w = 12, h = 8, dpi = 300) {
+
+  ggsave(
+    filename = file.path(parts_dir, paste0(filename_base, ".png")),
+    plot = p,
+    width = w, height = h, units = "in",
+    dpi = dpi, limitsize = FALSE
+  )
+
+  ggsave(
+    filename = file.path(parts_dir, paste0(filename_base, ".tif")),
+    plot = p,
+    width = w, height = h, units = "in",
+    dpi = dpi, limitsize = FALSE,
+    device = "tiff",
+    compression = "lzw"
+  )
+}
+
+save_plot_png_tif(final_panel,      "00_final_panel",         w = 22, h = 24)
+save_plot_png_tif(suitability_map,  "01_ensemble_map",        w = 12, h = 8)
+save_plot_png_tif(binary_map,   "01b_binary_map",    w = 12, h = 8)
+save_plot_png_tif(combined_map, "01c_combined_maps", w = 16, h = 8)
+save_plot_png_tif(importance_plot,  "02_variable_importance", w = 10, h = 6)
+save_plot_png_tif(vars_panel,       "03_predictor_panels",    w = 18, h = 12)
+save_plot_png_tif(tss_plot,         "04_TSS_models",          w = 10, h = 6)
+save_plot_png_tif(roc_plot,         "05_ROC_models",          w = 10, h = 6)
+save_plot_png_tif(evaluation_panel, "06_metrics_panel",       w = 16, h = 6)
+
+if (exists("var_panels") && length(var_panels) > 0) {
+  for (nm in names(var_panels)) {
+    safe_nm <- gsub("[^A-Za-z0-9_\\-]+", "_", nm)
+    save_plot_png_tif(var_panels[[nm]], paste0("07_predictor_", safe_nm), w = 12, h = 6)
+  }
+}
+
+cat("Saved all panel parts to:", parts_dir, "\n")
+
+
+# ======================================================
+
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggspatial)
+library(concaveman)
+library(terra)
+
+output_dir_compare <- file.path(output_dir, "Comparison_IUCN_MDD_THRESHOLD_CONCAVE")
+dir.create(output_dir_compare, recursive = TRUE, showWarnings = FALSE)
+cat("Comparison output:", output_dir_compare, "\n")
+
+# -----------------------------
+bbox_amer <- st_bbox(c(xmin = -170, xmax = -30, ymin = -60, ymax = 80), crs = 4326)
+
+countries_amer <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf") %>%
+  st_set_crs(4326) %>%
+  st_crop(bbox_amer)
+
+land_amer <- countries_amer %>%
+  st_make_valid() %>%
+  st_union() %>%
+  st_as_sf() %>%
+  st_make_valid()
+
+# -----------------------------
+occ_df <- coords %>%
+  dplyr::rename(lon = x, lat = y)
+
+occ_sf <- st_as_sf(occ_df, coords = c("lon", "lat"), crs = 4326) %>%
+  st_crop(bbox_amer)
+
+cat("Occurrences loaded:", nrow(occ_sf), "\n")
+
+if (nrow(occ_sf) < 3) {
+  stop("Need at least 3 occurrence points to build a concave hull.")
+}
+
+# -----------------------------
+occ_metric  <- st_transform(occ_sf, 3857)
+land_metric <- st_transform(land_amer, 3857)
+
+occ_concave_m <- concaveman::concaveman(
+  occ_metric,
+  concavity = 2,
+  length_threshold = 20000
+)
+
+occ_area_m <- st_buffer(st_make_valid(occ_concave_m), dist = 5000) %>%
+  st_make_valid()
+
+occ_area_land_m <- st_intersection(occ_area_m, land_metric) %>%
+  st_make_valid()
+
+occ_area_land <- st_transform(occ_area_land_m, 4326)
+
+
+# -----------------------------
+binary_rast <- binary_raster
+
+binary_rast_crop <- tryCatch(
+  terra::crop(binary_rast, terra::ext(-170, -30, -60, 80)),
+  error = function(e) binary_rast
+)
+
+binary_rast_crop[is.na(binary_rast_crop)] <- 0
+
+agg_fact  <- 6
+min_cells <- 8
+
+cat("Aggregating binary raster with factor =", agg_fact, "\n")
+
+binary_rast_small <- terra::aggregate(
+  binary_rast_crop,
+  fact = agg_fact,
+  fun = max,
+  na.rm = TRUE
+)
+
+binary_rast_small[is.na(binary_rast_small)] <- 0
+
+binary_rast_small_trim <- binary_rast_small
+binary_rast_small_trim[binary_rast_small_trim == 0] <- NA
+binary_rast_small_trim <- terra::trim(binary_rast_small_trim)
+
+binary_rast_small <- binary_rast_small_trim
+binary_rast_small[is.na(binary_rast_small)] <- 0
+
+patch <- terra::patches(binary_rast_small, directions = 8)
+freq_patch <- as.data.frame(terra::freq(patch))
+freq_patch <- freq_patch[!is.na(freq_patch$value), ]
+
+keep_ids <- freq_patch$value[freq_patch$count >= min_cells]
+
+binary_rast_clean <- binary_rast_small
+binary_rast_clean[!(patch %in% keep_ids)] <- 0
+
+binary_rast_clean_trim <- binary_rast_clean
+binary_rast_clean_trim[binary_rast_clean_trim == 0] <- NA
+binary_rast_clean_trim <- terra::trim(binary_rast_clean_trim)
+
+binary_rast_clean <- binary_rast_clean_trim
+binary_rast_clean[is.na(binary_rast_clean)] <- 0
+
+cat("Converting cleaned binary raster to polygons...\n")
+
+binary_poly <- terra::as.polygons(
+  binary_rast_clean,
+  dissolve = TRUE,
+  values = TRUE,
+  na.rm = TRUE
+)
+
+binary_poly_sf <- sf::st_as_sf(binary_poly) %>%
+  st_set_crs(4326) %>%
+  st_make_valid()
+
+geom_col <- attr(binary_poly_sf, "sf_column")
+val_cols <- setdiff(names(binary_poly_sf), geom_col)
+val_col  <- val_cols[1]
+
+binary_poly_sf <- binary_poly_sf %>%
+  dplyr::filter(.data[[val_col]] == 1)
+
+binary_metric <- st_transform(binary_poly_sf, 3857)
+
+binary_area_land_m <- st_intersection(binary_metric, land_metric) %>%
+  st_make_valid()
+
+binary_area_land <- st_transform(binary_area_land_m, 4326)
+
+if (nrow(binary_area_land) == 0) {
+  stop("Binary suitability polygon became empty after land clipping.")
+}
+
+# -----------------------------
+iucn_file <- "C:/Users/Administrador/Desktop/Gab/Mod/MAMMALS_TERRESTRIAL_ONLY/MAMMALS_TERRESTRIAL_ONLY.shp"
+cat("Reading IUCN shapefile...\n")
+
+mammals <- st_read(iucn_file, quiet = TRUE)
+
+iucn_vampyrum <- mammals %>%
+  dplyr::filter(sci_name == "Vampyrum spectrum", presence == 1, origin == 1) %>%
+  st_make_valid() %>%
+  st_transform(4326) %>%
+  st_crop(bbox_amer)
+
+if (nrow(iucn_vampyrum) == 0) {
+  stop("IUCN filter returned 0 features for 'Vampyrum spectrum'.")
+}
+
+
+# -----------------------------
+mdd_file <- "C:/Users/Administrador/Desktop/Gab/Mod/Vampyrum_MOL/vampyrum/Vampyrum-spectrum_MDD2020/data/Vampyrum_spectrum.shp"
+cat("Reading MDD shapefile...\n")
+
+mdd_vampyrum <- st_read(mdd_file, quiet = TRUE) %>%
+  st_make_valid() %>%
+  st_transform(4326) %>%
+  st_crop(bbox_amer)
+
+if (nrow(mdd_vampyrum) == 0) {
+  stop("MDD shapefile returned 0 features after crop.")
+}
+
+# -----------------------------
+calc_area_km2 <- function(sf_obj) {
+  sf_obj %>%
+    st_make_valid() %>%
+    st_transform(3857) %>%
+    st_area() %>%
+    sum() %>%
+    as.numeric() / 1e6
+}
+
+area_iucn_km2     <- calc_area_km2(iucn_vampyrum)
+area_mdd_km2      <- calc_area_km2(mdd_vampyrum)
+area_binary_km2   <- calc_area_km2(binary_area_land)
+area_concave_km2  <- calc_area_km2(occ_area_land)
+
+areas_df <- data.frame(
+  Map = c("IUCN", "MDD", "Threshold_binary", "Concave_polygon"),
+  Area_km2 = c(area_iucn_km2, area_mdd_km2, area_binary_km2, area_concave_km2)
+)
+
+cat("\n================ AREA SUMMARY (km²) ================\n")
+print(areas_df)
+cat("====================================================\n\n")
+
+write.csv(
+  areas_df,
+  file.path(output_dir_compare, "areas_comparison_km2.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------
+save_png_tif <- function(plot_obj, filename_base, w = 14, h = 10, dpi = 300) {
+  png_path <- file.path(output_dir_compare, paste0(filename_base, ".png"))
+  tif_path <- file.path(output_dir_compare, paste0(filename_base, ".tif"))
+
+  ggsave(
+    png_path,
+    plot = plot_obj,
+    width = w, height = h, units = "in",
+    dpi = dpi, limitsize = FALSE
+  )
+
+  ggsave(
+    tif_path,
+    plot = plot_obj,
+    width = w, height = h, units = "in",
+    dpi = dpi, limitsize = FALSE,
+    device = "tiff",
+    compression = "lzw"
+  )
+
+  cat("Saved:", basename(png_path), "and", basename(tif_path), "\n")
+}
+
+# -----------------------------
+map_iucn <- ggplot() +
+  geom_sf(data = countries_amer, fill = "gray95", color = "gray70", linewidth = 0.2) +
+  geom_sf(data = iucn_vampyrum, fill = "red", alpha = 0.25, color = "darkred", linewidth = 0.7) +
+  geom_sf(data = occ_sf, color = "black", size = 1.1, alpha = 0.85) +
+  coord_sf(xlim = c(-120, -30), ylim = c(-60, 30), expand = FALSE) +
+  annotation_north_arrow(location = "tr", which_north = "true") +
+  annotation_scale(location = "bl") +
+  labs(
+    title = "IUCN",
+    subtitle = paste0("Area = ", format(round(area_iucn_km2, 0), big.mark = ","), " km²"),
+    caption = "Red: IUCN | Black: occurrences"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    plot.caption = element_text(hjust = 0.5)
+  )
+
+map_mdd <- ggplot() +
+  geom_sf(data = countries_amer, fill = "gray95", color = "gray70", linewidth = 0.2) +
+  geom_sf(data = mdd_vampyrum, fill = "purple", alpha = 0.25, color = "darkviolet", linewidth = 0.7) +
+  geom_sf(data = occ_sf, color = "black", size = 1.1, alpha = 0.85) +
+  coord_sf(xlim = c(-120, -30), ylim = c(-60, 30), expand = FALSE) +
+  annotation_north_arrow(location = "tr", which_north = "true") +
+  annotation_scale(location = "bl") +
+  labs(
+    title = "MDD",
+    subtitle = paste0("Area = ", format(round(area_mdd_km2, 0), big.mark = ","), " km²"),
+    caption = "Purple: MDD | Black: occurrences"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    plot.caption = element_text(hjust = 0.5)
+  )
+
+map_threshold <- ggplot() +
+  geom_sf(data = countries_amer, fill = "gray95", color = "gray70", linewidth = 0.2) +
+  geom_sf(data = binary_area_land, fill = "darkgreen", alpha = 0.18, color = "darkgreen", linewidth = 0.7) +
+  geom_sf(data = occ_sf, color = "black", size = 1.1, alpha = 0.85) +
+  coord_sf(xlim = c(-120, -30), ylim = c(-60, 30), expand = FALSE) +
+  annotation_north_arrow(location = "tr", which_north = "true") +
+  annotation_scale(location = "bl") +
+  labs(
+    title = "Threshold-based binary suitability",
+    subtitle = paste0(
+      "Threshold = ", round(threshold_value, 3),
+      " | Area = ", format(round(area_binary_km2, 0), big.mark = ","), " km²"
+    ),
+    caption = "Green: threshold suitability area | Black: occurrences"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    plot.caption = element_text(hjust = 0.5)
+  )
+
+map_concave <- ggplot() +
+  geom_sf(data = countries_amer, fill = "gray95", color = "gray70", linewidth = 0.2) +
+  geom_sf(data = occ_area_land, fill = "deepskyblue3", alpha = 0.18, color = "deepskyblue4", linewidth = 0.7) +
+  geom_sf(data = occ_sf, color = "black", size = 1.1, alpha = 0.85) +
+  coord_sf(xlim = c(-120, -30), ylim = c(-60, 30), expand = FALSE) +
+  annotation_north_arrow(location = "tr", which_north = "true") +
+  annotation_scale(location = "bl") +
+  labs(
+    title = "Concave polygon from occurrences",
+    subtitle = paste0("Area = ", format(round(area_concave_km2, 0), big.mark = ","), " km²"),
+    caption = "Blue: concave polygon | Black: occurrences"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    plot.caption = element_text(hjust = 0.5)
+  )
+
+# -----------------------------
+panel_compare <- (map_iucn | map_mdd) / (map_threshold | map_concave) +
+  plot_annotation(
+    title = "Range comparison for Vampyrum spectrum",
+    subtitle = "IUCN, MDD, threshold-based suitability, and concave occurrence polygon",
+    theme = theme(
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+  )
+
+# -----------------------------
+save_png_tif(map_iucn,      "01_IUCN_only",        w = 14, h = 10)
+save_png_tif(map_mdd,       "02_MDD_only",         w = 14, h = 10)
+save_png_tif(map_threshold, "03_THRESHOLD_only",   w = 14, h = 10)
+save_png_tif(map_concave,   "04_CONCAVE_only",     w = 14, h = 10)
+save_png_tif(panel_compare, "05_PANEL_COMPARISON", w = 18, h = 14)
+
+cat("Comparison maps exported to:", output_dir_compare, "\n")
