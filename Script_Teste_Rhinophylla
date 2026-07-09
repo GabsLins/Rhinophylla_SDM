@@ -61,7 +61,7 @@ resp.var <- rep(1, nrow(coords))
 
 write.csv(
   data.frame(species="Rhinophylla", lon=coords$x, lat=coords$y),
-  file.path(output_dir, "dados_ocorrencia_teste110.csv"),
+  file.path(output_dir, "dados_ocorrencia_teste001.csv"),
   row.names = FALSE
 )
 
@@ -115,10 +115,10 @@ biomod_data <- BIOMOD_FormatingData(
   PA.nb.absences = 1000,
   PA.strategy = "random",
   filter.raster = TRUE,
-  resp.name = "Vampyrum.spectrum"
+  resp.name = "Rhinophylla"
 )
 
-saveRDS(biomod_data, file.path(output_dir, "biomod_data_teste110.rds"))
+saveRDS(biomod_data, file.path(output_dir, "biomod_data_teste001.rds"))
 
 # ======================================================
 myOptions <- BIOMOD_ModelingOptions(
@@ -141,7 +141,7 @@ models <- BIOMOD_Modeling(
   var.import = 3
 )
 
-saveRDS(models, file.path(output_dir, "models_teste110.rds"))
+saveRDS(models, file.path(output_dir, "models_teste001.rds"))
 
 # ======================================================
 ensemble <- BIOMOD_EnsembleModeling(
@@ -154,15 +154,15 @@ ensemble <- BIOMOD_EnsembleModeling(
   var.import = 3
 )
 
-saveRDS(ensemble, file.path(output_dir, "ensemble_teste110.rds"))
+saveRDS(ensemble, file.path(output_dir, "ensemble_teste001.rds"))
 
 # ======================================================
 ensemble_proj <- BIOMOD_EnsembleForecasting(
   bm.em = ensemble,
-  proj.name = "current_teste110",
+  proj.name = "current_teste001",
   new.env = env
 )
-saveRDS(ensemble_proj, file.path(output_dir, "ensemble_proj_teste110.rds"))
+saveRDS(ensemble_proj, file.path(output_dir, "ensemble_proj_teste001.rds"))
 
 pred_obj <- get_predictions(ensemble_proj)
 
@@ -179,7 +179,7 @@ if (is.null(ensemble_raster_single) || !terra::hasValues(ensemble_raster_single)
 
 terra::writeRaster(
   ensemble_raster_single,
-  file.path(output_dir, "ensemble_suitability_teste110.tif"),
+  file.path(output_dir, "ensemble_suitability_teste001.tif"),
   overwrite = TRUE
 )
 
@@ -263,7 +263,7 @@ importance <- as.data.frame(get_variables_importance(ensemble)) %>%
   summarise(importance = mean(var.imp, na.rm = TRUE), .groups="drop") %>%
   rename(var = expl.var)
 
-write.csv(importance, file.path(output_dir, "importance_teste110.csv"), row.names = FALSE)
+write.csv(importance, file.path(output_dir, "importance_teste001.csv"), row.names = FALSE)
 
 importance_plot <- ggplot(
   importance %>% arrange(desc(importance)),
@@ -487,7 +487,7 @@ final_panel <- (suitability_map | importance_plot) /
     theme = theme(plot.title = element_text(size=14, face="bold"))
   )
 
-out_panel <- file.path(output_dir, "04_Painel_INGLES_Final_COMPLETO_OFICIAL_teste110.png")
+out_panel <- file.path(output_dir, "04_Painel_INGLES_Final_COMPLETO_OFICIAL_teste001.png")
 cat("Salvando:", out_panel, "\n")
 
 ok <- tryCatch({
@@ -523,8 +523,8 @@ final_panel_binary <- (combined_map | importance_plot) /
     theme = theme(plot.title = element_text(size=14, face="bold"))
   )
 
-out_panel_cont <- file.path(output_dir, "04_Painel_INGLES_Final_CONTINUOUS_teste110.png")
-out_panel_bin  <- file.path(output_dir, "04_Painel_INGLES_Final_BINARIO_COMPLETO_OFICIAL_teste110.png")
+out_panel_cont <- file.path(output_dir, "04_Painel_INGLES_Final_CONTINUOUS_teste001.png")
+out_panel_bin  <- file.path(output_dir, "04_Painel_INGLES_Final_BINARIO_COMPLETO_OFICIAL_teste001.png")
 
 ggsave(out_panel_cont, plot = final_panel_continuous, width=22, height=24, units="in", dpi=300, limitsize=FALSE)
 ggsave(out_panel_bin,  plot = final_panel_binary,     width=22, height=24, units="in", dpi=300, limitsize=FALSE)
@@ -575,6 +575,14 @@ if (exists("var_panels") && length(var_panels) > 0) {
 
 cat("Saved all panel parts to:", parts_dir, "\n")
 
+#############################################################
+#############################################################
+##### NAO RODAR A PARTIR DAQUI AINDA#########################
+##### NAO RODAR A PARTIR DAQUI AINDA#########################
+##### NAO RODAR A PARTIR DAQUI AINDA#########################
+##### NAO RODAR A PARTIR DAQUI AINDA#########################
+#############################################################
+#############################################################
 
 # ======================================================
 
@@ -882,7 +890,7 @@ map_concave <- ggplot() +
 # -----------------------------
 panel_compare <- (map_iucn | map_mdd) / (map_threshold | map_concave) +
   plot_annotation(
-    title = "Range comparison for Vampyrum spectrum",
+    title = "Range comparison for Rhinophylla",
     subtitle = "IUCN, MDD, threshold-based suitability, and concave occurrence polygon",
     theme = theme(
       plot.title = element_text(face = "bold", hjust = 0.5),
