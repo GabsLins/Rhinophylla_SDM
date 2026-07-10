@@ -95,7 +95,7 @@ elevation <- prep_layer(
 )
 
 meanwindspeed <- prep_layer(
-  ("C:/Users/Administrador/Desktop/GAB/Mod/WorldClim_30s/WC_FINAL/wind_annual_mean.tif", 
+  "C:/Users/Administrador/Desktop/GAB/Mod/WorldClim_30s/WC_FINAL/wind_annual_mean.tif", 
   ref = BIO07
 )
 
