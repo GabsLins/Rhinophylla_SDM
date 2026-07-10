@@ -94,17 +94,30 @@ elevation <- prep_layer(
   ref = BIO7
 )
 
+meanwindspeed <- prep_layer(
+  ("C:/Users/Administrador/Desktop/GAB/Mod/WorldClim_30s/WC_FINAL/wind_annual_mean.tif", 
+  ref = BIO07
+)
+
+LAImin <- prep_layer(
+  "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Min_2023.tif", 
+  ref = BIO07
+)
+
+
 elevation[elevation < 0] <- NA
 
-env <- raster::stack(BIO7, elevation, BIO12, vaporpressure)
-names(env) <- c("BIO7", "Elevation", "BIO12", "VaporPressure")
+env <- raster::stack(BIO7, elevation, BIO12, vaporpressure, meanwindspeed, LAImin)
+names(env) <- c("BIO7", "Elevation", "BIO12", "Vapor Pressure", "Wind Speed", "LAI")
 
 cat("Layers:", paste(names(env), collapse = ", "), "\n")
 
 raster::writeRaster(BIO7,         file.path(output_dir, "BIO7.tif"), overwrite = TRUE)
 raster::writeRaster(elevation,    file.path(output_dir, "Elevation.tif"), overwrite = TRUE)
 raster::writeRaster(BIO12,        file.path(output_dir, "BIO12.tif"), overwrite = TRUE)
-raster::writeRaster(vaporpressure,file.path(output_dir, "VaporPressure.tif"), overwrite = TRUE)
+raster::writeRaster(vaporpressure,file.path(output_dir, "Vapor Pressure.tif"), overwrite = TRUE)
+raster::writeRaster(meanwindspeed,file.path(output_dir, "Wind Speed.tif"), overwrite = TRUE)
+raster::writeRaster(LAImin ,file.path(output_dir, "LAI.tif"), overwrite = TRUE)
 
 # ======================================================
 biomod_data <- BIOMOD_FormatingData(
