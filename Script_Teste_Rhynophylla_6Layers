@@ -96,12 +96,12 @@ elevation <- prep_layer(
 
 meanwindspeed <- prep_layer(
   "C:/Users/Administrador/Desktop/GAB/Mod/WorldClim_30s/WC_FINAL/wind_annual_mean.tif", 
-  ref = BIO07
+  ref = BIO7
 )
 
 LAImin <- prep_layer(
   "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Min_2023.tif", 
-  ref = BIO07
+  ref = BIO7
 )
 
 
@@ -587,6 +587,288 @@ if (exists("var_panels") && length(var_panels) > 0) {
 }
 
 cat("Saved all panel parts to:", parts_dir, "\n")
+
+#############################################################
+####SE DER ERRO NO SALVAMENTO DOS MAPAS######################
+####USA O CÓDIGO DE BAIXO####################################
+#############################################################
+
+
+countries <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+pres_coords <- data.frame(lon = coords$x, lat = coords$y)
+
+target_ext <- terra::ext(-120, -30, -60, 30)
+
+# -----------------------------
+# Mapa contínuo de adequabilidade
+# -----------------------------
+ens_crop <- tryCatch(
+    terra::crop(ensemble_raster_single, target_ext),
+    error = function(e) NULL
+)
+
+use_r <- ens_crop
+if (is.null(use_r) || !terra::hasValues(use_r)) {
+    use_r <- ensemble_raster_single
+}
+
+ens_df <- as.data.frame(use_r, xy = TRUE, na.rm = TRUE)
+colnames(ens_df)[3] <- "Suitability"
+
+if (!is.null(ens_crop) && terra::hasValues(ens_crop)) {
+    xlim_use <- c(-120, -30)
+    ylim_use <- c(-60, 30)
+} else {
+    e <- terra::ext(use_r)
+    xlim_use <- c(e$xmin, e$xmax)
+    ylim_use <- c(e$ymin, e$ymax)
+}
+
+suitability_map <- ggplot() +
+    geom_tile(data = ens_df, aes(x = x, y = y, fill = Suitability)) +
+    geom_sf(data = countries, fill = NA, color = "black", linewidth = 0.2) +
+    geom_point(
+        data = pres_coords,
+        aes(x = lon, y = lat),
+        color = "black",
+        size = 1,
+        alpha = 0.6
+    ) +
+    scale_fill_viridis_c(option = "plasma", name = "Suitability") +
+    coord_sf(xlim = xlim_use, ylim = ylim_use, expand = FALSE) +
+    theme_minimal() +
+    labs(title = "Habitat Suitability Map – Ensemble") +
+    theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+# -----------------------------
+# Gráficos de avaliação TSS e ROC
+# -----------------------------
+plot_metric <- function(metric, lim, ens_val) {
+    
+    p <- ggplot(
+        df_models %>% dplyr::filter(Metrica == metric),
+        aes(Modelo, Valor, fill = Modelo)
+    ) +
+        geom_violin(alpha = 0.4, trim = TRUE, color = NA) +
+        geom_boxplot(width = 0.3, outlier.size = 1) +
+        geom_hline(yintercept = lim, linetype = "dashed", color = "red") +
+        theme_minimal() +
+        coord_cartesian(ylim = c(0, 1)) +
+        theme(legend.position = "none") +
+        labs(title = metric, x = "Modelo", y = metric) +
+        theme(
+            plot.title = element_text(size = 18, face = "bold"),
+            axis.title = element_text(size = 16),
+            axis.text = element_text(size = 14),
+            strip.text = element_text(size = 14),
+            legend.title = element_text(size = 14),
+            legend.text = element_text(size = 12)
+        )
+    
+    if (is.finite(ens_val)) {
+        p <- p +
+            geom_hline(yintercept = ens_val, color = "blue", linewidth = 1.1) +
+            annotate(
+                "text",
+                x = Inf,
+                y = ens_val,
+                label = sprintf("Ensemble = %.3f", ens_val),
+                hjust = 1.05,
+                vjust = -0.4,
+                color = "blue",
+                size = 3.5
+            )
+    }
+    
+    return(p)
+}
+
+tss_plot <- plot_metric("TSS", 0.7, ens_tss)
+roc_plot <- plot_metric("ROC", 0.8, ens_roc)
+
+evaluation_panel <- tss_plot | roc_plot
+
+
+# -----------------------------
+# Mapa binário
+# -----------------------------
+binary_crop <- tryCatch(
+    terra::crop(binary_raster, target_ext),
+    error = function(e) NULL
+)
+
+use_bin <- binary_crop
+if (is.null(use_bin) || !terra::hasValues(use_bin)) {
+    use_bin <- binary_raster
+}
+
+bin_df <- as.data.frame(use_bin, xy = TRUE, na.rm = TRUE)
+colnames(bin_df)[3] <- "Binary"
+
+binary_map <- ggplot() +
+    geom_tile(data = bin_df, aes(x = x, y = y, fill = factor(Binary))) +
+    geom_sf(data = countries, fill = NA, color = "black", linewidth = 0.2) +
+    geom_point(
+        data = pres_coords,
+        aes(x = lon, y = lat),
+        color = "black",
+        size = 1,
+        alpha = 0.6
+    ) +
+    scale_fill_manual(
+        values = c("0" = "grey85", "1" = "darkgreen"),
+        name = "Prediction",
+        labels = c("0" = "Unsuitable", "1" = "Suitable")
+    ) +
+    coord_sf(xlim = xlim_use, ylim = ylim_use, expand = FALSE) +
+    theme_minimal() +
+    labs(
+        title = paste0(
+            "Binary suitability map (threshold = ",
+            round(threshold_value, 3),
+            ")"
+        )
+    ) +
+    theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+combined_map <- suitability_map | binary_map
+
+print(combined_map)
+
+
+# ======================================================
+# PAINÉIS FINAIS
+# ======================================================
+
+final_panel_continuous <- (suitability_map | importance_plot) /
+    vars_panel /
+    evaluation_panel +
+    plot_annotation(
+        title = "PANEL – Ecological Niche Modeling",
+        theme = theme(plot.title = element_text(size = 14, face = "bold"))
+    )
+
+final_panel_binary <- (combined_map | importance_plot) /
+    vars_panel /
+    evaluation_panel +
+    plot_annotation(
+        title = "PANEL – Ecological Niche Modeling",
+        theme = theme(plot.title = element_text(size = 14, face = "bold"))
+    )
+
+# Mantém este objeto caso você use "final_panel" em outro trecho
+final_panel <- final_panel_continuous
+
+
+# ======================================================
+# FUNÇÃO PARA SALVAR PNG E TIF
+# ======================================================
+
+parts_dir <- file.path(output_dir, "panel_parts")
+dir.create(parts_dir, recursive = TRUE, showWarnings = FALSE)
+
+save_plot_png_tif <- function(p, filename_base, w = 12, h = 8, dpi = 300) {
+    
+    ggsave(
+        filename = file.path(parts_dir, paste0(filename_base, ".png")),
+        plot = p,
+        width = w,
+        height = h,
+        units = "in",
+        dpi = dpi,
+        limitsize = FALSE
+    )
+    
+    ggsave(
+        filename = file.path(parts_dir, paste0(filename_base, ".tif")),
+        plot = p,
+        width = w,
+        height = h,
+        units = "in",
+        dpi = dpi,
+        limitsize = FALSE,
+        device = "tiff",
+        compression = "lzw"
+    )
+}
+
+
+# ======================================================
+# SALVAR PAINÉIS COMPLETOS
+# ======================================================
+
+out_panel_cont <- file.path(
+    output_dir,
+    "04_Painel_INGLES_Final_CONTINUOUS_teste001.png"
+)
+
+out_panel_bin <- file.path(
+    output_dir,
+    "04_Painel_INGLES_Final_BINARIO_COMPLETO_OFICIAL_teste001.png"
+)
+
+ggsave(
+    out_panel_cont,
+    plot = final_panel_continuous,
+    width = 22,
+    height = 24,
+    units = "in",
+    dpi = 300,
+    limitsize = FALSE
+)
+
+ggsave(
+    out_panel_bin,
+    plot = final_panel_binary,
+    width = 22,
+    height = 24,
+    units = "in",
+    dpi = 300,
+    limitsize = FALSE
+)
+
+
+# ======================================================
+# SALVAR PARTES SEPARADAS DO PAINEL
+# ======================================================
+
+save_plot_png_tif(final_panel_continuous, "00_final_panel_continuous", w = 22, h = 24)
+save_plot_png_tif(final_panel_binary,     "00_final_panel_binary",     w = 22, h = 24)
+
+save_plot_png_tif(suitability_map,  "01_ensemble_map",        w = 12, h = 8)
+save_plot_png_tif(binary_map,       "01b_binary_map",         w = 12, h = 8)
+save_plot_png_tif(combined_map,     "01c_combined_maps",      w = 16, h = 8)
+
+save_plot_png_tif(importance_plot,  "02_variable_importance", w = 10, h = 6)
+save_plot_png_tif(vars_panel,       "03_predictor_panels",    w = 18, h = 12)
+
+save_plot_png_tif(tss_plot,         "04_TSS_models",          w = 10, h = 6)
+save_plot_png_tif(roc_plot,         "05_ROC_models",          w = 10, h = 6)
+save_plot_png_tif(evaluation_panel, "06_metrics_panel",       w = 16, h = 6)
+
+
+# ======================================================
+# SALVAR CADA VARIÁVEL AMBIENTAL SEPARADAMENTE
+# ======================================================
+
+if (exists("var_panels") && length(var_panels) > 0) {
+    
+    for (nm in names(var_panels)) {
+        
+        safe_nm <- gsub("[^A-Za-z0-9_\\-]+", "_", nm)
+        
+        save_plot_png_tif(
+            var_panels[[nm]],
+            paste0("07_predictor_", safe_nm),
+            w = 12,
+            h = 6
+        )
+    }
+}
+
+cat("Concluído. Arquivos em:", output_dir, "\n")
+cat("Partes do painel salvas em:", parts_dir, "\n")
 
 #############################################################
 #############################################################
