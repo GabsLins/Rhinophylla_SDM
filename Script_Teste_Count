@@ -1,6 +1,6 @@
 # ======================================================
 # MODELAGEM RHINOPHYLLA - COUNT / ABUNDÂNCIA PROXY
-# Teste003_Count
+# teste006_Count
 # ======================================================
 
 library(biomod2)
@@ -21,7 +21,7 @@ set.seed(42)
 # 1) Diretório de saída
 # ======================================================
 
-output_dir <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Resultados_ensemble/Teste003_Count"
+output_dir <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Resultados_ensemble/teste006_Count"
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 cat("Output:", output_dir, "\n")
@@ -100,7 +100,7 @@ if (nrow(coords_raw) == 0) {
 
 write.csv(
   coords_raw,
-  file.path(output_dir, "dados_count_brutos_teste003.csv"),
+  file.path(output_dir, "dados_count_brutos_teste006.csv"),
   row.names = FALSE
 )
 
@@ -244,7 +244,7 @@ write.csv(
     count = coords$count,
     n_records = coords$n_records
   ),
-  file.path(output_dir, "dados_count_agregado_por_celula_teste003.csv"),
+  file.path(output_dir, "dados_count_agregado_por_celula_teste006.csv"),
   row.names = FALSE
 )
 
@@ -260,7 +260,7 @@ count_summary <- data.frame(
 
 write.csv(
   count_summary,
-  file.path(output_dir, "count_summary_teste003.csv"),
+  file.path(output_dir, "count_summary_teste006.csv"),
   row.names = FALSE
 )
 
@@ -283,7 +283,7 @@ biomod_data <- BIOMOD_FormatingData(
 
 saveRDS(
   biomod_data,
-  file.path(output_dir, "biomod_data_count_teste003.rds")
+  file.path(output_dir, "biomod_data_count_teste006.rds")
 )
 
 
@@ -328,7 +328,7 @@ models <- BIOMOD_Modeling(
 
 saveRDS(
   models,
-  file.path(output_dir, "models_count_teste003.rds")
+  file.path(output_dir, "models_count_teste006.rds")
 )
 
 
@@ -352,7 +352,7 @@ ensemble <- BIOMOD_EnsembleModeling(
 
 saveRDS(
   ensemble,
-  file.path(output_dir, "ensemble_count_teste003.rds")
+  file.path(output_dir, "ensemble_count_teste006.rds")
 )
 
 
@@ -362,13 +362,13 @@ saveRDS(
 
 ensemble_proj <- BIOMOD_EnsembleForecasting(
   bm.em = ensemble,
-  proj.name = "current_count_teste003",
+  proj.name = "current_count_teste006",
   new.env = env
 )
 
 saveRDS(
   ensemble_proj,
-  file.path(output_dir, "ensemble_proj_count_teste003.rds")
+  file.path(output_dir, "ensemble_proj_count_teste006.rds")
 )
 
 pred_obj <- get_predictions(ensemble_proj)
@@ -404,7 +404,7 @@ predicted_count_raster <- terra::ifel(
 
 terra::writeRaster(
   predicted_count_raster,
-  file.path(output_dir, "ensemble_predicted_count_teste003.tif"),
+  file.path(output_dir, "ensemble_predicted_count_teste006.tif"),
   overwrite = TRUE
 )
 
@@ -444,7 +444,7 @@ df_models <- ev_models %>%
 
 write.csv(
   df_models,
-  file.path(output_dir, "model_evaluations_count_teste003.csv"),
+  file.path(output_dir, "model_evaluations_count_teste006.csv"),
   row.names = FALSE
 )
 
@@ -465,7 +465,7 @@ df_ens <- ev_ens %>%
 
 write.csv(
   df_ens,
-  file.path(output_dir, "ensemble_evaluations_count_teste003.csv"),
+  file.path(output_dir, "ensemble_evaluations_count_teste006.csv"),
   row.names = FALSE
 )
 
@@ -499,7 +499,7 @@ importance <- as.data.frame(get_variables_importance(ensemble)) %>%
 
 write.csv(
   importance,
-  file.path(output_dir, "importance_count_teste003.csv"),
+  file.path(output_dir, "importance_count_teste006.csv"),
   row.names = FALSE
 )
 
@@ -1067,7 +1067,7 @@ save_plot_png_tif <- function(p, filename_base, w = 12, h = 8, dpi = 300) {
 
 out_panel_count <- file.path(
   output_dir,
-  "04_Painel_INGLES_Final_COUNT_teste003.png"
+  "04_Painel_INGLES_Final_COUNT_teste006.png"
 )
 
 ggsave(
