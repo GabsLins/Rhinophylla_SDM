@@ -152,19 +152,15 @@ meanwindspeed <- prep_layer(
   ref = BIO7
 )
 
-# ATENÇÃO:
-# Aqui continua usando LAI mínimo, como no código anterior.
-# Se quiser testar o LAI médio, troque para LAI_Mean_2023.tif.
 LAImin <- prep_layer(
   "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Min_2023.tif",
   ref = BIO7
 )
 
-# Alternativa:
-# LAImin <- prep_layer(
-#   "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Mean_2023.tif",
-#   ref = BIO7
-# )
+LAImean <- prep_layer(
+  "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Mean_2023.tif",
+  ref = BIO7
+)
 
 elevation[elevation < 0] <- NA
 
@@ -186,6 +182,13 @@ names(env) <- c(
   "LAI"
 )
 
+env_biomod <- terra::rast(env)
+
+names(env_biomod) <- names(env)
+
+cat("Classe de env:", class(env), "\n")
+cat("Classe de env_biomod:", class(env_biomod), "\n")
+
 cat("Layers:", paste(names(env), collapse = ", "), "\n")
 
 raster::writeRaster(BIO7,          file.path(output_dir, "BIO7.tif"), overwrite = TRUE)
@@ -193,7 +196,8 @@ raster::writeRaster(elevation,     file.path(output_dir, "Elevation.tif"), overw
 raster::writeRaster(BIO12,         file.path(output_dir, "BIO12.tif"), overwrite = TRUE)
 raster::writeRaster(vaporpressure, file.path(output_dir, "Vapor_Pressure.tif"), overwrite = TRUE)
 raster::writeRaster(meanwindspeed, file.path(output_dir, "Wind_Speed.tif"), overwrite = TRUE)
-raster::writeRaster(LAImin,        file.path(output_dir, "LAI.tif"), overwrite = TRUE)
+raster::writeRaster(LAImin,        file.path(output_dir, "LAI_Min.tif"), overwrite = TRUE)
+raster::writeRaster(LAImean,        file.path(output_dir, "LAI_Mean.tif"), overwrite = TRUE)
 
 
 # ======================================================
@@ -276,7 +280,7 @@ biomod_data <- BIOMOD_FormatingData(
   resp.name = "Rhinophylla_count",
   resp.var = resp.var,
   resp.xy = coords[, c("x", "y")],
-  expl.var = env,
+  expl.var = env_biomod,
   data.type = "count",
   filter.raster = FALSE
 )
@@ -363,7 +367,7 @@ saveRDS(
 ensemble_proj <- BIOMOD_EnsembleForecasting(
   bm.em = ensemble,
   proj.name = "current_count_teste006",
-  new.env = env
+  new.env = env_biomod
 )
 
 saveRDS(
