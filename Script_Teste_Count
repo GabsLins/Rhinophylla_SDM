@@ -1,0 +1,1160 @@
+# ======================================================
+# MODELAGEM RHINOPHYLLA - COUNT / ABUNDÂNCIA PROXY
+# Teste003_Count
+# ======================================================
+
+library(biomod2)
+library(sp)
+library(raster)
+library(terra)
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(patchwork)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(viridis)
+
+set.seed(42)
+
+# ======================================================
+# 1) Diretório de saída
+# ======================================================
+
+output_dir <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Resultados_ensemble/Teste003_Count"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+cat("Output:", output_dir, "\n")
+
+# Recomendo rodar o biomod2 dentro da pasta de saída
+old_wd <- getwd()
+setwd(output_dir)
+on.exit(setwd(old_wd), add = TRUE)
+
+
+# ======================================================
+# 2) Dados de ocorrência com contagem
+# ======================================================
+
+# Mesmo repositório da planilha anterior, apenas com o novo nome do arquivo
+occ_csv <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Planilha Rhinophylla_Final_08.05.2026.xlsx - SDM_Count.csv"
+
+occ <- read.csv(
+  occ_csv,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+cat("Colunas da planilha:\n")
+print(names(occ))
+
+required_cols <- c("Specie", "latitude", "longitude", "count")
+
+missing_cols <- setdiff(required_cols, names(occ))
+
+if (length(missing_cols) > 0) {
+  stop(
+    "A planilha não possui as seguintes colunas obrigatórias: ",
+    paste(missing_cols, collapse = ", ")
+  )
+}
+
+# Função segura para converter números
+fix_num <- function(v) {
+  v <- trimws(as.character(v))
+  v <- gsub(",", ".", v)
+  v <- gsub("[^0-9\\.-]", "", v)
+  as.numeric(v)
+}
+
+coords_raw <- occ %>%
+  dplyr::transmute(
+    species = Specie,
+    x = fix_num(longitude),
+    y = fix_num(latitude),
+    count = fix_num(count)
+  ) %>%
+  dplyr::filter(
+    is.finite(x),
+    is.finite(y),
+    is.finite(count),
+    count > 0,
+    x >= -180,
+    x <= 180,
+    y >= -90,
+    y <= 90
+  )
+
+# Garante que count seja inteiro
+if (any(coords_raw$count != round(coords_raw$count), na.rm = TRUE)) {
+  warning("Há valores de count não inteiros. Eles serão arredondados.")
+  coords_raw$count <- round(coords_raw$count)
+}
+
+cat("Registros válidos com count:", nrow(coords_raw), "\n")
+cat("Soma total dos counts:", sum(coords_raw$count, na.rm = TRUE), "\n")
+
+if (nrow(coords_raw) == 0) {
+  stop("Nenhum registro válido encontrado. Verifique longitude, latitude e count.")
+}
+
+write.csv(
+  coords_raw,
+  file.path(output_dir, "dados_count_brutos_teste003.csv"),
+  row.names = FALSE
+)
+
+
+# ======================================================
+# 3) Camadas ambientais
+# ======================================================
+
+ext_america <- raster::extent(-170, -26, -56, 72)
+
+prep_layer <- function(path, ref = NULL, method = "bilinear") {
+  
+  if (!file.exists(path)) {
+    stop("Arquivo não encontrado: ", path)
+  }
+  
+  r <- raster::raster(path)
+  r <- raster::crop(r, ext_america)
+  
+  if (!is.null(ref)) {
+    r <- raster::resample(r, ref, method = method)
+  }
+  
+  return(r)
+}
+
+# Camada de referência
+BIO7 <- prep_layer(
+  "C:/Users/Administrador/Desktop/Gab/Mod/wc2.1_2.5m_bio/wc2.1_2.5m_bio_7.tif"
+)
+
+vaporpressure <- prep_layer(
+  "C:/Users/Administrador/Desktop/Gab/Mod/meanvaporpressure.tif",
+  ref = BIO7
+)
+
+BIO12 <- prep_layer(
+  "C:/Users/Administrador/Desktop/Gab/Mod/wc2.1_2.5m_bio/wc2.1_2.5m_bio_12.tif",
+  ref = BIO7
+)
+
+elevation <- prep_layer(
+  "C:/Users/Administrador/Desktop/GAB/Mod/output_GMRT.tif",
+  ref = BIO7
+)
+
+meanwindspeed <- prep_layer(
+  "C:/Users/Administrador/Desktop/GAB/Mod/WorldClim_30s/WC_FINAL/wind_annual_mean.tif",
+  ref = BIO7
+)
+
+# ATENÇÃO:
+# Aqui continua usando LAI mínimo, como no código anterior.
+# Se quiser testar o LAI médio, troque para LAI_Mean_2023.tif.
+LAImin <- prep_layer(
+  "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Min_2023.tif",
+  ref = BIO7
+)
+
+# Alternativa:
+# LAImin <- prep_layer(
+#   "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Mean_2023.tif",
+#   ref = BIO7
+# )
+
+elevation[elevation < 0] <- NA
+
+env <- raster::stack(
+  BIO7,
+  elevation,
+  BIO12,
+  vaporpressure,
+  meanwindspeed,
+  LAImin
+)
+
+names(env) <- c(
+  "BIO7",
+  "Elevation",
+  "BIO12",
+  "Vapor Pressure",
+  "Wind Speed",
+  "LAI"
+)
+
+cat("Layers:", paste(names(env), collapse = ", "), "\n")
+
+raster::writeRaster(BIO7,          file.path(output_dir, "BIO7.tif"), overwrite = TRUE)
+raster::writeRaster(elevation,     file.path(output_dir, "Elevation.tif"), overwrite = TRUE)
+raster::writeRaster(BIO12,         file.path(output_dir, "BIO12.tif"), overwrite = TRUE)
+raster::writeRaster(vaporpressure, file.path(output_dir, "Vapor_Pressure.tif"), overwrite = TRUE)
+raster::writeRaster(meanwindspeed, file.path(output_dir, "Wind_Speed.tif"), overwrite = TRUE)
+raster::writeRaster(LAImin,        file.path(output_dir, "LAI.tif"), overwrite = TRUE)
+
+
+# ======================================================
+# 4) Agregação do count por célula ambiental
+# ======================================================
+
+# Nesta versão NÃO usamos thinning.
+# Como o count representa abundância/intensidade, não convém descartar pontos.
+# Em vez disso, somamos os counts dentro da mesma célula ambiental.
+
+cell_id <- raster::cellFromXY(
+  env[[1]],
+  coords_raw[, c("x", "y")]
+)
+
+coords_count <- coords_raw %>%
+  dplyr::mutate(cell = cell_id) %>%
+  dplyr::filter(!is.na(cell)) %>%
+  dplyr::group_by(cell) %>%
+  dplyr::summarise(
+    species = dplyr::first(species),
+    count = sum(count, na.rm = TRUE),
+    n_records = dplyr::n(),
+    .groups = "drop"
+  )
+
+cell_xy <- raster::xyFromCell(env[[1]], coords_count$cell)
+
+coords <- data.frame(
+  x = cell_xy[, 1],
+  y = cell_xy[, 2],
+  count = coords_count$count,
+  n_records = coords_count$n_records
+)
+
+resp.var <- coords$count
+
+cat("Células ambientais com count:", nrow(coords), "\n")
+cat("Soma total de count após agregação:", sum(resp.var, na.rm = TRUE), "\n")
+cat("Count mínimo:", min(resp.var, na.rm = TRUE), "\n")
+cat("Count máximo:", max(resp.var, na.rm = TRUE), "\n")
+
+write.csv(
+  data.frame(
+    species = "Rhinophylla",
+    lon = coords$x,
+    lat = coords$y,
+    count = coords$count,
+    n_records = coords$n_records
+  ),
+  file.path(output_dir, "dados_count_agregado_por_celula_teste003.csv"),
+  row.names = FALSE
+)
+
+count_summary <- data.frame(
+  n_records_original = nrow(coords_raw),
+  n_cells_modeling = nrow(coords),
+  total_count = sum(coords$count, na.rm = TRUE),
+  min_count = min(coords$count, na.rm = TRUE),
+  median_count = median(coords$count, na.rm = TRUE),
+  mean_count = mean(coords$count, na.rm = TRUE),
+  max_count = max(coords$count, na.rm = TRUE)
+)
+
+write.csv(
+  count_summary,
+  file.path(output_dir, "count_summary_teste003.csv"),
+  row.names = FALSE
+)
+
+
+# ======================================================
+# 5) Formatação dos dados no biomod2
+# ======================================================
+
+# Para count, não usamos pseudo-ausências.
+# Portanto, não entram PA.nb.rep, PA.nb.absences nem PA.strategy.
+
+biomod_data <- BIOMOD_FormatingData(
+  resp.name = "Rhinophylla_count",
+  resp.var = resp.var,
+  resp.xy = coords[, c("x", "y")],
+  expl.var = env,
+  data.type = "count",
+  filter.raster = FALSE
+)
+
+saveRDS(
+  biomod_data,
+  file.path(output_dir, "biomod_data_count_teste003.rds")
+)
+
+
+# ======================================================
+# 6) Opções e modelagem
+# ======================================================
+
+# MAXENT foi removido nesta versão porque a lógica dele é mais apropriada
+# para presença/background ou presença/pseudo-ausência, não para count direto.
+
+myOptions <- BIOMOD_ModelingOptions(
+  RF = list(
+    n.trees = 500,
+    mtry = 2,
+    nodesize = 5
+  ),
+  GBM = list(
+    n.trees = 2000,
+    interaction.depth = 2,
+    shrinkage = 0.005,
+    bag.fraction = 0.5,
+    n.minobsinnode = 5
+  ),
+  GLM = list(
+    type = "simple",
+    test = "BIC"
+  ),
+  GAM = list(
+    k = 3
+  )
+)
+
+models <- BIOMOD_Modeling(
+  biomod_data,
+  models = c("GLM", "GAM", "GBM", "RF"),
+  bm.options = myOptions,
+  CV.strategy = "block",
+  CV.nb.rep = 5,
+  metric.eval = c("RMSE", "MAE", "Rsquared"),
+  var.import = 3
+)
+
+saveRDS(
+  models,
+  file.path(output_dir, "models_count_teste003.rds")
+)
+
+
+# ======================================================
+# 7) Ensemble count
+# ======================================================
+
+# Para count, RMSE/MAE/Rsquared são métricas adequadas.
+# Aqui mantemos todos os modelos no ensemble.
+# Se quiser selecionar modelos, uma opção futura seria usar Rsquared.
+
+ensemble <- BIOMOD_EnsembleModeling(
+  bm.mod = models,
+  models.chosen = "all",
+  em.by = "all",
+  em.algo = c("EMmean"),
+  metric.select = "all",
+  metric.eval = c("RMSE", "MAE", "Rsquared"),
+  var.import = 3
+)
+
+saveRDS(
+  ensemble,
+  file.path(output_dir, "ensemble_count_teste003.rds")
+)
+
+
+# ======================================================
+# 8) Projeção do ensemble count
+# ======================================================
+
+ensemble_proj <- BIOMOD_EnsembleForecasting(
+  bm.em = ensemble,
+  proj.name = "current_count_teste003",
+  new.env = env
+)
+
+saveRDS(
+  ensemble_proj,
+  file.path(output_dir, "ensemble_proj_count_teste003.rds")
+)
+
+pred_obj <- get_predictions(ensemble_proj)
+
+predicted_count_raster <- tryCatch(
+  terra::rast(pred_obj)[[1]],
+  error = function(e) NULL
+)
+
+if (is.null(predicted_count_raster) || !terra::hasValues(predicted_count_raster)) {
+  
+  rs <- tryCatch(
+    raster::stack(pred_obj),
+    error = function(e) NULL
+  )
+  
+  if (!is.null(rs)) {
+    predicted_count_raster <- terra::rast(rs)[[1]]
+  }
+}
+
+if (is.null(predicted_count_raster) || !terra::hasValues(predicted_count_raster)) {
+  stop("Não consegui obter raster de count predito. Veja class/str de get_predictions(ensemble_proj).")
+}
+
+# Count não pode ser negativo.
+# Caso algum algoritmo gere valor negativo, truncamos para zero.
+predicted_count_raster <- terra::ifel(
+  predicted_count_raster < 0,
+  0,
+  predicted_count_raster
+)
+
+terra::writeRaster(
+  predicted_count_raster,
+  file.path(output_dir, "ensemble_predicted_count_teste003.tif"),
+  overwrite = TRUE
+)
+
+
+# ======================================================
+# 9) Avaliações dos modelos
+# ======================================================
+
+ev_models <- as.data.frame(get_evaluations(models))
+
+cat("Colunas disponíveis em get_evaluations(models):\n")
+print(names(ev_models))
+
+get_eval_col <- function(df) {
+  
+  possible_cols <- c("validation", "calibration", "evaluation")
+  
+  col <- possible_cols[possible_cols %in% names(df)]
+  
+  if (length(col) == 0) {
+    stop("Não encontrei coluna de avaliação: validation, calibration ou evaluation.")
+  }
+  
+  return(col[1])
+}
+
+eval_col_models <- get_eval_col(ev_models)
+
+df_models <- ev_models %>%
+  dplyr::filter(metric.eval %in% c("RMSE", "MAE", "Rsquared")) %>%
+  dplyr::transmute(
+    Modelo = algo,
+    Metrica = metric.eval,
+    Valor = .data[[eval_col_models]]
+  ) %>%
+  dplyr::filter(is.finite(Valor), !is.na(Valor))
+
+write.csv(
+  df_models,
+  file.path(output_dir, "model_evaluations_count_teste003.csv"),
+  row.names = FALSE
+)
+
+ev_ens <- as.data.frame(get_evaluations(ensemble))
+
+cat("Colunas disponíveis em get_evaluations(ensemble):\n")
+print(names(ev_ens))
+
+eval_col_ens <- get_eval_col(ev_ens)
+
+df_ens <- ev_ens %>%
+  dplyr::filter(metric.eval %in% c("RMSE", "MAE", "Rsquared")) %>%
+  dplyr::transmute(
+    Metrica = metric.eval,
+    Valor = .data[[eval_col_ens]]
+  ) %>%
+  dplyr::filter(is.finite(Valor), !is.na(Valor))
+
+write.csv(
+  df_ens,
+  file.path(output_dir, "ensemble_evaluations_count_teste003.csv"),
+  row.names = FALSE
+)
+
+get_ens_value <- function(metric_name) {
+  
+  val <- df_ens %>%
+    dplyr::filter(Metrica == metric_name) %>%
+    dplyr::pull(Valor)
+  
+  if (length(val) == 0) return(NA_real_)
+  
+  return(val[1])
+}
+
+ens_rmse <- get_ens_value("RMSE")
+ens_mae  <- get_ens_value("MAE")
+ens_r2   <- get_ens_value("Rsquared")
+
+
+# ======================================================
+# 10) Importância das variáveis
+# ======================================================
+
+importance <- as.data.frame(get_variables_importance(ensemble)) %>%
+  dplyr::group_by(expl.var) %>%
+  dplyr::summarise(
+    importance = mean(var.imp, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::rename(var = expl.var)
+
+write.csv(
+  importance,
+  file.path(output_dir, "importance_count_teste003.csv"),
+  row.names = FALSE
+)
+
+importance_plot <- ggplot(
+  importance %>% dplyr::arrange(desc(importance)),
+  aes(x = reorder(var, importance), y = importance)
+) +
+  geom_col(fill = "steelblue") +
+  geom_text(
+    aes(label = sprintf("%.3f", importance)),
+    hjust = -0.15,
+    size = 3.5
+  ) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  theme_minimal() +
+  labs(
+    title = "Variable Importance - Count Ensemble",
+    x = "",
+    y = "Importance"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+
+# ======================================================
+# 11) Escalas editáveis para visualização das camadas
+# ======================================================
+
+# "full"     = usa mínimo e máximo reais da camada
+# "quantile" = usa percentis para destacar melhor a variação
+# "manual"   = usa limites definidos em map_manual_limits
+
+map_scale_mode <- "quantile"
+
+map_scale_quantiles <- c(0.02, 0.98)
+
+# Ajuste aqui os limites visuais de cada variável.
+# Isso muda apenas o mapa, não muda o modelo.
+map_manual_limits <- list(
+  "LAI" = c(0.05, 0.25)
+  
+  # Exemplos:
+  # "Elevation" = c(0, 1500),
+  # "BIO12" = c(500, 3500),
+  # "Vapor Pressure" = c(1.5, 3.0),
+  # "Wind Speed" = c(0.5, 2.5),
+  # "BIO7" = c(8, 20)
+)
+
+# Escala visual do mapa de count predito.
+# Deixe NULL para usar quantis automaticamente.
+predicted_count_manual_limits <- NULL
+
+# Exemplo, caso queira controlar manualmente:
+# predicted_count_manual_limits <- c(0, 100)
+
+predicted_count_quantiles <- c(0.02, 0.98)
+
+
+get_map_limits <- function(varname, values) {
+  
+  values <- values[is.finite(values)]
+  
+  if (length(values) == 0) {
+    return(list(
+      limits = NULL,
+      label = "scale: full"
+    ))
+  }
+  
+  if (varname %in% names(map_manual_limits)) {
+    
+    lims <- map_manual_limits[[varname]]
+    
+    return(list(
+      limits = lims,
+      label = paste0("scale: ", lims[1], "–", lims[2])
+    ))
+  }
+  
+  if (map_scale_mode == "quantile") {
+    
+    lims <- as.numeric(
+      quantile(
+        values,
+        probs = map_scale_quantiles,
+        na.rm = TRUE,
+        names = FALSE
+      )
+    )
+    
+    if (
+      length(lims) == 2 &&
+      all(is.finite(lims)) &&
+      lims[1] < lims[2]
+    ) {
+      return(list(
+        limits = lims,
+        label = paste0(
+          "scale: P",
+          map_scale_quantiles[1] * 100,
+          "–P",
+          map_scale_quantiles[2] * 100
+        )
+      ))
+    }
+  }
+  
+  lims <- range(values, na.rm = TRUE)
+  
+  return(list(
+    limits = lims,
+    label = "scale: full"
+  ))
+}
+
+
+get_prediction_limits <- function(values) {
+  
+  values <- values[is.finite(values)]
+  
+  if (length(values) == 0) {
+    return(list(
+      limits = NULL,
+      label = "scale: full"
+    ))
+  }
+  
+  if (!is.null(predicted_count_manual_limits)) {
+    
+    lims <- predicted_count_manual_limits
+    
+    return(list(
+      limits = lims,
+      label = paste0("scale: ", lims[1], "–", lims[2])
+    ))
+  }
+  
+  lims <- as.numeric(
+    quantile(
+      values,
+      probs = predicted_count_quantiles,
+      na.rm = TRUE,
+      names = FALSE
+    )
+  )
+  
+  if (
+    length(lims) == 2 &&
+    all(is.finite(lims)) &&
+    lims[1] < lims[2]
+  ) {
+    return(list(
+      limits = lims,
+      label = paste0(
+        "scale: P",
+        predicted_count_quantiles[1] * 100,
+        "–P",
+        predicted_count_quantiles[2] * 100
+      )
+    ))
+  }
+  
+  lims <- range(values, na.rm = TRUE)
+  
+  return(list(
+    limits = lims,
+    label = "scale: full"
+  ))
+}
+
+
+# ======================================================
+# 12) Funções auxiliares para mapas
+# ======================================================
+
+as_xy_df <- function(obj) {
+  
+  df <- as.data.frame(obj)
+  
+  if (all(c("x", "y") %in% names(df))) {
+    return(df[, c("x", "y"), drop = FALSE])
+  }
+  
+  if (all(c("lon", "lat") %in% names(df))) {
+    out <- df[, c("lon", "lat"), drop = FALSE]
+    names(out) <- c("x", "y")
+    return(out)
+  }
+  
+  if (all(c("longitude", "latitude") %in% names(df))) {
+    out <- df[, c("longitude", "latitude"), drop = FALSE]
+    names(out) <- c("x", "y")
+    return(out)
+  }
+  
+  num_cols <- which(sapply(df, is.numeric))
+  
+  if (length(num_cols) >= 2) {
+    out <- df[, num_cols[1:2], drop = FALSE]
+    names(out) <- c("x", "y")
+    warning("Coords sem nomes padrão; usei as 2 primeiras colunas numéricas como x,y.")
+    return(out)
+  }
+  
+  stop("Não consegui obter coordenadas x,y.")
+}
+
+
+as_points_vect <- function(xy_df, crs_str) {
+  
+  xy_df <- as.data.frame(xy_df)
+  
+  terra::vect(
+    xy_df,
+    geom = c("x", "y"),
+    crs = crs_str
+  )
+}
+
+
+# ======================================================
+# 13) Painéis das variáveis ambientais
+# ======================================================
+
+make_var_panel <- function(r, varname, coords_obj, imp_df) {
+  
+  rr <- terra::rast(r)
+  
+  crs_r <- terra::crs(rr)
+  
+  if (is.na(crs_r) || crs_r == "") {
+    crs_r <- "EPSG:4326"
+  }
+  
+  coords_xy <- as_xy_df(coords_obj)
+  coords_xy$count <- coords_obj$count
+  
+  coords_v <- as_points_vect(coords_xy[, c("x", "y")], crs_r)
+  
+  imp_val <- imp_df %>%
+    dplyr::filter(var == varname) %>%
+    dplyr::pull(importance)
+  
+  imp_txt <- ifelse(
+    length(imp_val) > 0,
+    sprintf(" | Imp: %.3f", imp_val[1]),
+    " | Imp: NA"
+  )
+  
+  rr_crop <- tryCatch(
+    terra::crop(rr, terra::ext(-120, -30, -60, 30)),
+    error = function(e) NULL
+  )
+  
+  rr_use <- rr_crop
+  
+  if (is.null(rr_use) || !terra::hasValues(rr_use)) {
+    rr_use <- rr
+  }
+  
+  r_df <- as.data.frame(rr_use, xy = TRUE, na.rm = TRUE)
+  colnames(r_df)[3] <- "val"
+  
+  scale_info <- get_map_limits(varname, r_df$val)
+  
+  map <- ggplot() +
+    geom_tile(
+      data = r_df,
+      aes(x = x, y = y, fill = val)
+    ) +
+    geom_point(
+      data = coords_xy,
+      aes(x = x, y = y, size = count),
+      color = "red",
+      alpha = 0.65
+    ) +
+    scale_size_continuous(
+      range = c(0.4, 2.5),
+      trans = "sqrt"
+    ) +
+    scale_fill_viridis_c(
+      option = "viridis",
+      name = varname,
+      limits = scale_info$limits,
+      oob = scales::squish
+    ) +
+    guides(size = "none") +
+    coord_sf(expand = FALSE) +
+    theme_minimal() +
+    labs(
+      title = paste0(varname, imp_txt),
+      subtitle = scale_info$label
+    ) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      plot.subtitle = element_text(size = 8)
+    )
+  
+  obs_vals <- terra::extract(rr, coords_v)[, 2]
+  
+  df <- data.frame(
+    Value = obs_vals,
+    Count = coords_obj$count,
+    log_count = log1p(coords_obj$count)
+  ) %>%
+    dplyr::filter(
+      is.finite(Value),
+      !is.na(Value),
+      is.finite(Count),
+      Count > 0
+    )
+  
+  rel_plot <- ggplot(df, aes(x = Value, y = log_count)) +
+    geom_point(
+      aes(size = Count),
+      alpha = 0.55,
+      color = "darkred"
+    ) +
+    geom_smooth(
+      method = "loess",
+      se = FALSE,
+      linewidth = 0.7,
+      color = "black"
+    ) +
+    scale_size_continuous(
+      range = c(0.8, 3),
+      trans = "sqrt"
+    ) +
+    guides(size = "none") +
+    theme_minimal() +
+    labs(
+      title = paste("Count relationship –", varname),
+      x = varname,
+      y = "log1p(count)"
+    )
+  
+  map | rel_plot
+}
+
+
+var_panels <- lapply(names(env), function(v) {
+  make_var_panel(
+    env[[v]],
+    v,
+    coords,
+    importance
+  )
+})
+
+names(var_panels) <- names(env)
+
+vars_panel <- wrap_plots(var_panels, ncol = 2) +
+  plot_annotation(
+    title = "Environmental Predictors: Map + Count Relationship",
+    theme = theme(
+      plot.title = element_text(face = "bold", hjust = 0.5)
+    )
+  )
+
+
+# ======================================================
+# 14) Mapa de count predito
+# ======================================================
+
+countries <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+pres_coords <- data.frame(
+  lon = coords$x,
+  lat = coords$y,
+  count = coords$count
+)
+
+target_ext <- terra::ext(-120, -30, -60, 30)
+
+pred_crop <- tryCatch(
+  terra::crop(predicted_count_raster, target_ext),
+  error = function(e) NULL
+)
+
+use_pred <- pred_crop
+
+if (is.null(use_pred) || !terra::hasValues(use_pred)) {
+  use_pred <- predicted_count_raster
+}
+
+pred_df <- as.data.frame(use_pred, xy = TRUE, na.rm = TRUE)
+colnames(pred_df)[3] <- "Predicted_Count"
+
+if (!is.null(pred_crop) && terra::hasValues(pred_crop)) {
+  xlim_use <- c(-120, -30)
+  ylim_use <- c(-60, 30)
+} else {
+  e <- terra::ext(use_pred)
+  xlim_use <- c(e$xmin, e$xmax)
+  ylim_use <- c(e$ymin, e$ymax)
+}
+
+pred_scale_info <- get_prediction_limits(pred_df$Predicted_Count)
+
+predicted_count_map <- ggplot() +
+  geom_tile(
+    data = pred_df,
+    aes(x = x, y = y, fill = Predicted_Count)
+  ) +
+  geom_sf(
+    data = countries,
+    fill = NA,
+    color = "black",
+    linewidth = 0.2
+  ) +
+  geom_point(
+    data = pres_coords,
+    aes(x = lon, y = lat, size = count),
+    color = "black",
+    alpha = 0.6
+  ) +
+  scale_size_continuous(
+    name = "Observed count",
+    range = c(0.6, 3.5),
+    trans = "sqrt"
+  ) +
+  scale_fill_viridis_c(
+    option = "plasma",
+    name = "Predicted count",
+    limits = pred_scale_info$limits,
+    oob = scales::squish
+  ) +
+  coord_sf(
+    xlim = xlim_use,
+    ylim = ylim_use,
+    expand = FALSE
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Predicted Count Map – Ensemble",
+    subtitle = pred_scale_info$label
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 9, hjust = 0.5)
+  )
+
+print(predicted_count_map)
+
+
+# ======================================================
+# 15) Gráficos de avaliação: RMSE, MAE e Rsquared
+# ======================================================
+
+plot_metric_count <- function(metric, ens_val = NA_real_) {
+  
+  df_metric <- df_models %>%
+    dplyr::filter(Metrica == metric)
+  
+  p <- ggplot(
+    df_metric,
+    aes(Modelo, Valor, fill = Modelo)
+  ) +
+    geom_violin(
+      alpha = 0.4,
+      trim = TRUE,
+      color = NA
+    ) +
+    geom_boxplot(
+      width = 0.3,
+      outlier.size = 1
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none") +
+    labs(
+      title = metric,
+      x = "Modelo",
+      y = metric
+    ) +
+    theme(
+      plot.title = element_text(size = 18, face = "bold"),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 12)
+    )
+  
+  if (is.finite(ens_val)) {
+    
+    p <- p +
+      geom_hline(
+        yintercept = ens_val,
+        color = "blue",
+        linewidth = 1
+      ) +
+      annotate(
+        "text",
+        x = Inf,
+        y = ens_val,
+        label = sprintf("Ensemble = %.3f", ens_val),
+        hjust = 1.05,
+        vjust = -0.4,
+        color = "blue",
+        size = 3.2
+      )
+  }
+  
+  return(p)
+}
+
+rmse_plot <- plot_metric_count("RMSE", ens_rmse)
+mae_plot  <- plot_metric_count("MAE", ens_mae)
+r2_plot   <- plot_metric_count("Rsquared", ens_r2)
+
+evaluation_panel <- rmse_plot | mae_plot | r2_plot
+
+
+# ======================================================
+# 16) Painel final
+# ======================================================
+
+final_panel_count <- (predicted_count_map | importance_plot) /
+  vars_panel /
+  evaluation_panel +
+  plot_annotation(
+    title = "PANEL – Ecological Niche Modeling with Count Data",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold")
+    )
+  )
+
+
+# ======================================================
+# 17) Função para salvar PNG e TIF
+# ======================================================
+
+parts_dir <- file.path(output_dir, "panel_parts")
+dir.create(parts_dir, recursive = TRUE, showWarnings = FALSE)
+
+save_plot_png_tif <- function(p, filename_base, w = 12, h = 8, dpi = 300) {
+  
+  ggsave(
+    filename = file.path(parts_dir, paste0(filename_base, ".png")),
+    plot = p,
+    width = w,
+    height = h,
+    units = "in",
+    dpi = dpi,
+    limitsize = FALSE
+  )
+  
+  ggsave(
+    filename = file.path(parts_dir, paste0(filename_base, ".tif")),
+    plot = p,
+    width = w,
+    height = h,
+    units = "in",
+    dpi = dpi,
+    limitsize = FALSE,
+    device = "tiff",
+    compression = "lzw"
+  )
+}
+
+
+# ======================================================
+# 18) Salvar painel completo
+# ======================================================
+
+out_panel_count <- file.path(
+  output_dir,
+  "04_Painel_INGLES_Final_COUNT_teste003.png"
+)
+
+ggsave(
+  out_panel_count,
+  plot = final_panel_count,
+  width = 22,
+  height = 24,
+  units = "in",
+  dpi = 300,
+  limitsize = FALSE
+)
+
+
+# ======================================================
+# 19) Salvar partes separadas
+# ======================================================
+
+save_plot_png_tif(
+  final_panel_count,
+  "00_final_panel_count",
+  w = 22,
+  h = 24
+)
+
+save_plot_png_tif(
+  predicted_count_map,
+  "01_predicted_count_map",
+  w = 12,
+  h = 8
+)
+
+save_plot_png_tif(
+  importance_plot,
+  "02_variable_importance_count",
+  w = 10,
+  h = 6
+)
+
+save_plot_png_tif(
+  vars_panel,
+  "03_predictor_count_relationship_panels",
+  w = 18,
+  h = 12
+)
+
+save_plot_png_tif(
+  rmse_plot,
+  "04_RMSE_models",
+  w = 10,
+  h = 6
+)
+
+save_plot_png_tif(
+  mae_plot,
+  "05_MAE_models",
+  w = 10,
+  h = 6
+)
+
+save_plot_png_tif(
+  r2_plot,
+  "06_Rsquared_models",
+  w = 10,
+  h = 6
+)
+
+save_plot_png_tif(
+  evaluation_panel,
+  "07_metrics_panel_count",
+  w = 18,
+  h = 6
+)
+
+if (exists("var_panels") && length(var_panels) > 0) {
+  
+  for (nm in names(var_panels)) {
+    
+    safe_nm <- gsub("[^A-Za-z0-9_\\-]+", "_", nm)
+    
+    save_plot_png_tif(
+      var_panels[[nm]],
+      paste0("08_predictor_count_", safe_nm),
+      w = 12,
+      h = 6
+    )
+  }
+}
+
+cat("Concluído. Arquivos em:", output_dir, "\n")
+cat("Partes do painel salvas em:", parts_dir, "\n")
