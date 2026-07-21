@@ -1,5 +1,5 @@
 # ======================================================
-# MODELAGEM RHINOPHYLLA - TESTE002
+# MODELAGEM RHINOPHYLLA - teste005
 # COM ESCALA EDITÁVEL PARA MAPAS DAS VARIÁVEIS AMBIENTAIS
 # ======================================================
 
@@ -21,7 +21,7 @@ set.seed(42)
 # 1) Diretório de saída
 # -----------------------------
 
-output_dir <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Resultados_ensemble/Teste002"
+output_dir <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Resultados_ensemble/teste005"
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 cat("Output:", output_dir, "\n")
@@ -117,7 +117,7 @@ write.csv(
     lon = coords$x,
     lat = coords$y
   ),
-  file.path(output_dir, "dados_ocorrencia_teste002.csv"),
+  file.path(output_dir, "dados_ocorrencia_teste005.csv"),
   row.names = FALSE
 )
 
@@ -173,16 +173,17 @@ meanwindspeed <- prep_layer(
 # ATENÇÃO:
 # Aqui você está usando LAI mínimo.
 # Se quiser uma camada visual/ecológica mais representativa, teste LAI_Mean_2023.tif.
+
 LAImin <- prep_layer(
   "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Min_2023.tif",
   ref = BIO7
 )
 
 # Exemplo alternativo:
-# LAImin <- prep_layer(
-#   "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Mean_2023.tif",
-#   ref = BIO7
-# )
+LAImean <- prep_layer(
+   "C:/Users/Administrador/Desktop/GAB/Mod/LAI/LAI_Mean_2023.tif",
+   ref = BIO7
+)
 
 elevation[elevation < 0] <- NA
 
@@ -192,7 +193,8 @@ env <- raster::stack(
   BIO12,
   vaporpressure,
   meanwindspeed,
-  LAImin
+  LAImin,
+  LAImean
 )
 
 names(env) <- c(
@@ -201,7 +203,8 @@ names(env) <- c(
   "BIO12",
   "Vapor Pressure",
   "Wind Speed",
-  "LAI"
+  "LAI Min",
+  "LAI Mean"
 )
 
 cat("Layers:", paste(names(env), collapse = ", "), "\n")
@@ -211,7 +214,8 @@ raster::writeRaster(elevation,     file.path(output_dir, "Elevation.tif"), overw
 raster::writeRaster(BIO12,         file.path(output_dir, "BIO12.tif"), overwrite = TRUE)
 raster::writeRaster(vaporpressure, file.path(output_dir, "Vapor_Pressure.tif"), overwrite = TRUE)
 raster::writeRaster(meanwindspeed, file.path(output_dir, "Wind_Speed.tif"), overwrite = TRUE)
-raster::writeRaster(LAImin,        file.path(output_dir, "LAI.tif"), overwrite = TRUE)
+raster::writeRaster(LAImin,        file.path(output_dir, "LAI_min.tif"), overwrite = TRUE)
+raster::writeRaster(LAImean,        file.path(output_dir, "LAI_mean.tif"), overwrite = TRUE)
 
 
 # ======================================================
@@ -231,7 +235,7 @@ biomod_data <- BIOMOD_FormatingData(
 
 saveRDS(
   biomod_data,
-  file.path(output_dir, "biomod_data_teste002.rds")
+  file.path(output_dir, "biomod_data_teste005.rds")
 )
 
 
@@ -279,7 +283,7 @@ models <- BIOMOD_Modeling(
 
 saveRDS(
   models,
-  file.path(output_dir, "models_teste002.rds")
+  file.path(output_dir, "models_teste005.rds")
 )
 
 
@@ -299,7 +303,7 @@ ensemble <- BIOMOD_EnsembleModeling(
 
 saveRDS(
   ensemble,
-  file.path(output_dir, "ensemble_teste002.rds")
+  file.path(output_dir, "ensemble_teste005.rds")
 )
 
 
@@ -309,13 +313,13 @@ saveRDS(
 
 ensemble_proj <- BIOMOD_EnsembleForecasting(
   bm.em = ensemble,
-  proj.name = "current_teste002",
+  proj.name = "current_teste005",
   new.env = env
 )
 
 saveRDS(
   ensemble_proj,
-  file.path(output_dir, "ensemble_proj_teste002.rds")
+  file.path(output_dir, "ensemble_proj_teste005.rds")
 )
 
 pred_obj <- get_predictions(ensemble_proj)
@@ -343,7 +347,7 @@ if (is.null(ensemble_raster_single) || !terra::hasValues(ensemble_raster_single)
 
 terra::writeRaster(
   ensemble_raster_single,
-  file.path(output_dir, "ensemble_suitability_teste002.tif"),
+  file.path(output_dir, "ensemble_suitability_teste005.tif"),
   overwrite = TRUE
 )
 
@@ -455,7 +459,7 @@ importance <- as.data.frame(get_variables_importance(ensemble)) %>%
 
 write.csv(
   importance,
-  file.path(output_dir, "importance_teste002.csv"),
+  file.path(output_dir, "importance_teste005.csv"),
   row.names = FALSE
 )
 
@@ -532,7 +536,7 @@ map_scale_quantiles <- c(0.02, 0.98)
 # Ajuste aqui os limites visuais de cada camada.
 # Isso muda APENAS a visualização do mapa, não o modelo.
 map_manual_limits <- list(
-  "LAI" = c(0.05, 0.25)
+  "LAI Min" = c(0.05, 0.25)  ### AQUI TO DANDO O LIMITE DA ESCALA DE COR
   
   # Exemplos, caso queira controlar outras variáveis:
   # "Elevation" = c(0, 1500),
@@ -1022,12 +1026,12 @@ save_plot_png_tif <- function(p, filename_base, w = 12, h = 8, dpi = 300) {
 
 out_panel_cont <- file.path(
   output_dir,
-  "04_Painel_INGLES_Final_CONTINUOUS_teste002.png"
+  "04_Painel_INGLES_Final_CONTINUOUS_teste005.png"
 )
 
 out_panel_bin <- file.path(
   output_dir,
-  "04_Painel_INGLES_Final_BINARIO_COMPLETO_OFICIAL_teste002.png"
+  "04_Painel_INGLES_Final_BINARIO_COMPLETO_OFICIAL_teste005.png"
 )
 
 ggsave(
