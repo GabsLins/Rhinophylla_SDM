@@ -54,7 +54,7 @@ if (!("data.type" %in% names(formals(BIOMOD_FormatingData)))) {
 # 2) Dados de ocorrência com count
 # ======================================================
 
-occ_csv <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Planilha Rhinophylla_Final_08.05.2026.xlsx - SDM_Count.csv"
+occ_csv <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Planilha Rhinophylla_Final_SDM_Count.csv"
 
 occ <- read.csv(
   occ_csv,
