@@ -1,14 +1,20 @@
 # ======================================================
 # MODELAGEM RHINOPHYLLA - COUNT / ABUNDÂNCIA PROXY
-# Teste006_Count
-# Correções:
+# teste007_Count
+#
+# Versão corrigida:
 # - usa data.type = "count"
 # - usa SpatRaster no biomod2
-# - remove bm.options = myOptions
-# - usa OPT.strategy = "bigboss"
 # - remove pseudo-ausências
 # - remove TSS/ROC e mapa binário
 # - inclui LAI_Min e LAI_Mean
+# - NÃO usa BIOMOD_EnsembleModeling
+# - NÃO usa BIOMOD_Projection
+# - projeta modelos manualmente com BIOMOD_LoadModels + predict()
+# - corrige erro: modelo carregado, mas sem raster válido
+# - faz predição por data.frame em blocos
+# - reconstrói o raster manualmente
+# - cria ensemble manual por média dos modelos projetados
 # ======================================================
 
 library(biomod2)
@@ -29,7 +35,17 @@ set.seed(42)
 # 1) Diretório de saída
 # ======================================================
 
-output_dir <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Resultados_ensemble/Teste006_Count"
+output_dir <- "C:/Users/Administrador/Desktop/GAB/Mod/Rhinophylla/Resultados_ensemble/teste007_Count"
+
+# Limpa execução anterior para evitar conflito com pastas/projeções quebradas.
+# Se quiser preservar a pasta anterior, altere para FALSE.
+reset_output_dir <- TRUE
+
+if (reset_output_dir && dir.exists(output_dir)) {
+  cat("Removendo execução anterior:", output_dir, "\n")
+  unlink(output_dir, recursive = TRUE, force = TRUE)
+}
+
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 cat("Output:", output_dir, "\n")
@@ -48,6 +64,9 @@ if (!("data.type" %in% names(formals(BIOMOD_FormatingData)))) {
     )
   )
 }
+
+resp_name <- "Rhinophylla.count"
+modeling_id <- "CountModels_teste007"
 
 
 # ======================================================
@@ -144,7 +163,7 @@ cat("Count máximo:", max(coords_raw$count, na.rm = TRUE), "\n")
 
 write.csv(
   coords_raw,
-  file.path(output_dir, "dados_count_brutos_teste006.csv"),
+  file.path(output_dir, "dados_count_brutos_teste007.csv"),
   row.names = FALSE
 )
 
@@ -217,7 +236,6 @@ env <- raster::stack(
   LAImean
 )
 
-# Evitei espaços nos nomes para reduzir risco em fórmulas internas dos modelos
 names(env) <- c(
   "BIO7",
   "Elevation",
@@ -238,7 +256,6 @@ raster::writeRaster(meanwindspeed, file.path(output_dir, "WindSpeed.tif"), overw
 raster::writeRaster(LAImin,        file.path(output_dir, "LAI_Min.tif"), overwrite = TRUE)
 raster::writeRaster(LAImean,       file.path(output_dir, "LAI_Mean.tif"), overwrite = TRUE)
 
-# Conversão essencial para o biomod2 novo com data.type = "count"
 env_biomod <- terra::rast(env)
 names(env_biomod) <- names(env)
 
@@ -249,9 +266,6 @@ cat("Classe de env_biomod:", class(env_biomod), "\n")
 # ======================================================
 # 4) Agregação do count por célula ambiental
 # ======================================================
-
-# Para count, não fazemos thinning.
-# Em vez disso, somamos os counts dentro da mesma célula ambiental.
 
 cell_id <- raster::cellFromXY(
   env[[1]],
@@ -293,7 +307,7 @@ write.csv(
     count = coords$count,
     n_records = coords$n_records
   ),
-  file.path(output_dir, "dados_count_agregado_por_celula_teste006.csv"),
+  file.path(output_dir, "dados_count_agregado_por_celula_teste007.csv"),
   row.names = FALSE
 )
 
@@ -302,16 +316,16 @@ count_summary <- data.frame(
   n_cells_modeling = nrow(coords),
   total_count = sum(coords$count, na.rm = TRUE),
   min_count = min(coords$count, na.rm = TRUE),
-  q25_count = quantile(coords$count, 0.25, na.rm = TRUE),
+  q25_count = as.numeric(quantile(coords$count, 0.25, na.rm = TRUE)),
   median_count = median(coords$count, na.rm = TRUE),
   mean_count = mean(coords$count, na.rm = TRUE),
-  q75_count = quantile(coords$count, 0.75, na.rm = TRUE),
+  q75_count = as.numeric(quantile(coords$count, 0.75, na.rm = TRUE)),
   max_count = max(coords$count, na.rm = TRUE)
 )
 
 write.csv(
   count_summary,
-  file.path(output_dir, "count_summary_teste006.csv"),
+  file.path(output_dir, "count_summary_teste007.csv"),
   row.names = FALSE
 )
 
@@ -325,18 +339,20 @@ cat("Classe de resp.xy:", class(coords[, c("x", "y")]), "\n")
 cat("Classe de expl.var:", class(env_biomod), "\n")
 
 biomod_data <- BIOMOD_FormatingData(
-  resp.name = "Rhinophylla_count",
+  resp.name = resp_name,
   resp.var = resp.var,
   resp.xy = coords[, c("x", "y")],
   expl.var = env_biomod,
+  dir.name = output_dir,
   data.type = "count",
   filter.raster = FALSE,
-  na.rm = TRUE
+  na.rm = TRUE,
+  seed.val = 42
 )
 
 saveRDS(
   biomod_data,
-  file.path(output_dir, "biomod_data_count_teste006.rds")
+  file.path(output_dir, "biomod_data_count_teste007.rds")
 )
 
 
@@ -349,100 +365,34 @@ count_metrics <- c("RMSE", "MAE", "Rsquared")
 
 models <- BIOMOD_Modeling(
   bm.format = biomod_data,
-  modeling.id = "CountModels_teste006",
+  modeling.id = modeling_id,
   models = models_to_run,
   CV.strategy = "block",
-  CV.do.full.models = TRUE,
+  CV.do.full.models = FALSE,
   OPT.strategy = "bigboss",
   metric.eval = count_metrics,
   var.import = 3,
+  nb.cpu = 1,
   seed.val = 42,
   do.progress = TRUE
 )
 
 saveRDS(
   models,
-  file.path(output_dir, "models_count_teste006.rds")
+  file.path(output_dir, "models_count_teste007.rds")
 )
 
 
 # ======================================================
-# 7) Ensemble count
+# 7) Avaliações dos modelos
 # ======================================================
 
-ensemble <- BIOMOD_EnsembleModeling(
-  bm.mod = models,
-  models.chosen = "all",
-  em.by = "all",
-  em.algo = c("EMmean"),
-  metric.select = "all",
-  metric.eval = count_metrics,
-  var.import = 3,
-  seed.val = 42,
-  do.progress = TRUE
-)
-
-saveRDS(
-  ensemble,
-  file.path(output_dir, "ensemble_count_teste006.rds")
-)
-
-
-# ======================================================
-# 8) Projeção do ensemble count
-# ======================================================
-
-ensemble_proj <- BIOMOD_EnsembleForecasting(
-  bm.em = ensemble,
-  proj.name = "current_count_teste006",
-  new.env = env_biomod,
-  do.progress = TRUE
-)
-
-saveRDS(
-  ensemble_proj,
-  file.path(output_dir, "ensemble_proj_count_teste006.rds")
-)
-
-pred_obj <- get_predictions(ensemble_proj)
-
-predicted_count_raster <- tryCatch(
-  terra::rast(pred_obj)[[1]],
-  error = function(e) NULL
-)
-
-if (is.null(predicted_count_raster) || !terra::hasValues(predicted_count_raster)) {
-  
-  rs <- tryCatch(
-    raster::stack(pred_obj),
-    error = function(e) NULL
-  )
-  
-  if (!is.null(rs)) {
-    predicted_count_raster <- terra::rast(rs)[[1]]
-  }
-}
-
-if (is.null(predicted_count_raster) || !terra::hasValues(predicted_count_raster)) {
-  stop("Não consegui obter raster de count predito. Veja class/str de get_predictions(ensemble_proj).")
-}
-
-predicted_count_raster <- terra::ifel(
-  predicted_count_raster < 0,
-  0,
-  predicted_count_raster
-)
-
-terra::writeRaster(
-  predicted_count_raster,
-  file.path(output_dir, "ensemble_predicted_count_teste006.tif"),
-  overwrite = TRUE
-)
-
-
-# ======================================================
-# 9) Avaliações dos modelos
-# ======================================================
+# Nesta modelagem count, as métricas apropriadas são de erro/regressão:
+# - RMSE: menor é melhor
+# - MAE: menor é melhor
+# - Rsquared: maior é melhor
+# O bloco abaixo organiza essas métricas por algoritmo para evitar que
+# um valor extremo, especialmente em GLM, esconda o desempenho dos demais.
 
 ev_models <- as.data.frame(get_evaluations(models))
 
@@ -463,69 +413,130 @@ get_eval_col <- function(df) {
 
 eval_col_models <- get_eval_col(ev_models)
 
-df_models <- ev_models %>%
-  dplyr::filter(metric.eval %in% count_metrics) %>%
-  dplyr::transmute(
-    Modelo = algo,
-    Metrica = metric.eval,
-    Valor = .data[[eval_col_models]]
+get_optional_col <- function(df, possible_cols, default_value = NA_character_) {
+  col <- possible_cols[possible_cols %in% names(df)]
+  if (length(col) == 0) return(rep(default_value, nrow(df)))
+  return(as.character(df[[col[1]]]))
+}
+
+raw_eval_count <- ev_models %>%
+  dplyr::filter(metric.eval %in% count_metrics)
+
+df_models <- raw_eval_count %>%
+  dplyr::mutate(
+    Modelo = as.character(algo),
+    Metrica = as.character(metric.eval),
+    Dataset = get_optional_col(raw_eval_count, c("data.set", "dataset", "PA", "PA.dataset")),
+    Run = get_optional_col(raw_eval_count, c("run", "RUN", "calib.lines")),
+    Valor = as.numeric(.data[[eval_col_models]])
   ) %>%
-  dplyr::filter(is.finite(Valor), !is.na(Valor))
+  dplyr::select(Modelo, Metrica, Dataset, Run, Valor) %>%
+  dplyr::filter(is.finite(Valor), !is.na(Valor)) %>%
+  dplyr::mutate(
+    Modelo = factor(Modelo, levels = models_to_run),
+    Metrica = factor(Metrica, levels = count_metrics)
+  )
 
 write.csv(
   df_models,
-  file.path(output_dir, "model_evaluations_count_teste006.csv"),
+  file.path(output_dir, "model_evaluations_count_raw_by_algorithm_teste007.csv"),
   row.names = FALSE
 )
 
-ev_ens <- as.data.frame(get_evaluations(ensemble))
+format_metric_label <- function(x, digits = 3) {
+  
+  out <- ifelse(
+    !is.finite(x),
+    "NA",
+    ifelse(
+      abs(x) >= 10000 | abs(x) < 0.001,
+      formatC(x, format = "e", digits = 2),
+      formatC(x, format = "f", digits = digits)
+    )
+  )
+  
+  return(out)
+}
 
-cat("Colunas disponíveis em get_evaluations(ensemble):\n")
-print(names(ev_ens))
-
-eval_col_ens <- get_eval_col(ev_ens)
-
-df_ens <- ev_ens %>%
-  dplyr::filter(metric.eval %in% count_metrics) %>%
-  dplyr::transmute(
-    Metrica = metric.eval,
-    Valor = .data[[eval_col_ens]]
+metric_summary <- df_models %>%
+  dplyr::group_by(Modelo, Metrica) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean = mean(Valor, na.rm = TRUE),
+    sd = stats::sd(Valor, na.rm = TRUE),
+    median = stats::median(Valor, na.rm = TRUE),
+    q25 = as.numeric(stats::quantile(Valor, 0.25, na.rm = TRUE)),
+    q75 = as.numeric(stats::quantile(Valor, 0.75, na.rm = TRUE)),
+    min = min(Valor, na.rm = TRUE),
+    max = max(Valor, na.rm = TRUE),
+    .groups = "drop"
   ) %>%
-  dplyr::filter(is.finite(Valor), !is.na(Valor))
+  dplyr::mutate(
+    mean_label = format_metric_label(mean),
+    median_label = format_metric_label(median),
+    sd_label = format_metric_label(sd),
+    q25_label = format_metric_label(q25),
+    q75_label = format_metric_label(q75)
+  )
 
 write.csv(
-  df_ens,
-  file.path(output_dir, "ensemble_evaluations_count_teste006.csv"),
+  metric_summary,
+  file.path(output_dir, "model_evaluations_count_summary_by_algorithm_teste007.csv"),
   row.names = FALSE
 )
 
-get_ens_value <- function(metric_name) {
-  
-  val <- df_ens %>%
+# Tabela em formato amplo para leitura rápida fora do R
+metric_summary_wide <- tryCatch(
+  {
+    stats::reshape(
+      as.data.frame(
+        metric_summary %>%
+          dplyr::select(Modelo, Metrica, n, mean, sd, median, q25, q75, min, max)
+      ),
+      idvar = "Modelo",
+      timevar = "Metrica",
+      direction = "wide"
+    )
+  },
+  error = function(e) {
+    message("Não foi possível criar tabela ampla de métricas: ", e$message)
+    metric_summary
+  }
+)
+
+write.csv(
+  metric_summary_wide,
+  file.path(output_dir, "model_evaluations_count_summary_wide_teste007.csv"),
+  row.names = FALSE
+)
+
+mean_metric_value <- function(metric_name) {
+  val <- df_models %>%
     dplyr::filter(Metrica == metric_name) %>%
     dplyr::pull(Valor)
   
   if (length(val) == 0) return(NA_real_)
-  
-  return(mean(val, na.rm = TRUE))
+  mean(val, na.rm = TRUE)
 }
 
-ens_rmse <- get_ens_value("RMSE")
-ens_mae  <- get_ens_value("MAE")
-ens_r2   <- get_ens_value("Rsquared")
+mean_rmse <- mean_metric_value("RMSE")
+mean_mae  <- mean_metric_value("MAE")
+mean_r2   <- mean_metric_value("Rsquared")
 
+cat("Resumo das métricas por algoritmo:\n")
+print(metric_summary)
 
 # ======================================================
-# 10) Importância das variáveis
+# 8) Importância das variáveis
 # ======================================================
 
-importance_raw <- as.data.frame(get_variables_importance(ensemble))
+importance_raw <- as.data.frame(get_variables_importance(models))
 
-cat("Colunas disponíveis em get_variables_importance(ensemble):\n")
+cat("Colunas disponíveis em get_variables_importance(models):\n")
 print(names(importance_raw))
 
 if (!all(c("expl.var", "var.imp") %in% names(importance_raw))) {
-  stop("A estrutura de get_variables_importance(ensemble) mudou. Verifique names(importance_raw).")
+  stop("A estrutura de get_variables_importance mudou. Verifique names(importance_raw).")
 }
 
 importance <- importance_raw %>%
@@ -538,7 +549,7 @@ importance <- importance_raw %>%
 
 write.csv(
   importance,
-  file.path(output_dir, "importance_count_teste006.csv"),
+  file.path(output_dir, "importance_count_teste007.csv"),
   row.names = FALSE
 )
 
@@ -556,7 +567,7 @@ importance_plot <- ggplot(
   scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
   theme_minimal() +
   labs(
-    title = "Variable Importance - Count Ensemble",
+    title = "Variable Importance - Count Models",
     x = "",
     y = "Importance"
   ) +
@@ -566,29 +577,401 @@ importance_plot <- ggplot(
 
 
 # ======================================================
+# 9) Projeção manual dos modelos individuais
+# ======================================================
+
+manual_proj_dir <- file.path(output_dir, "manual_projections_teste007")
+dir.create(manual_proj_dir, recursive = TRUE, showWarnings = FALSE)
+
+if (!dir.exists(manual_proj_dir)) {
+  stop("Não foi possível criar a pasta de projeções manuais: ", manual_proj_dir)
+}
+
+safe_filename <- function(x) {
+  gsub("[^A-Za-z0-9_\\-]+", "_", x)
+}
+
+built_models <- get_built_models(models)
+
+cat("Modelos construídos disponíveis:\n")
+print(built_models)
+
+built_models <- built_models[!grepl("_allRun_", built_models)]
+
+if (length(built_models) == 0) {
+  stop("Nenhum modelo construído disponível para projeção.")
+}
+
+# Tamanho dos blocos de predição.
+# Se o computador tiver bastante memória, pode aumentar para 500000.
+projection_chunk_size <- 100000
+
+# Recupera os nomes das variáveis explicativas usadas pelo biomod2.
+expl_var_names <- tryCatch(
+  get_formal_data(models, subinfo = "expl.var.names"),
+  error = function(e) names(env_biomod)
+)
+
+if (is.null(expl_var_names) || length(expl_var_names) == 0) {
+  expl_var_names <- names(env_biomod)
+}
+
+expl_var_names <- as.character(expl_var_names)
+
+cat("Variáveis usadas na projeção:\n")
+print(expl_var_names)
+
+missing_vars <- setdiff(expl_var_names, names(env_biomod))
+
+if (length(missing_vars) > 0) {
+  stop(
+    "As seguintes variáveis do modelo não estão em env_biomod: ",
+    paste(missing_vars, collapse = ", ")
+  )
+}
+
+env_biomod <- env_biomod[[expl_var_names]]
+
+extract_prediction_vector <- function(pred, expected_n) {
+  
+  if (is.null(pred)) {
+    return(NULL)
+  }
+  
+  if (is.numeric(pred) && length(pred) == expected_n) {
+    return(as.numeric(pred))
+  }
+  
+  if (is.matrix(pred) || is.data.frame(pred)) {
+    
+    pred_df <- as.data.frame(pred)
+    
+    if (nrow(pred_df) == expected_n) {
+      
+      num_cols <- which(sapply(pred_df, is.numeric))
+      
+      if (length(num_cols) > 0) {
+        return(as.numeric(pred_df[[num_cols[1]]]))
+      }
+    }
+  }
+  
+  if (is.list(pred)) {
+    
+    for (i in seq_along(pred)) {
+      
+      out <- tryCatch(
+        extract_prediction_vector(pred[[i]], expected_n),
+        error = function(e) NULL
+      )
+      
+      if (!is.null(out) && length(out) == expected_n) {
+        return(out)
+      }
+    }
+  }
+  
+  pred_df_try <- tryCatch(
+    as.data.frame(pred),
+    error = function(e) NULL
+  )
+  
+  if (!is.null(pred_df_try) && nrow(pred_df_try) == expected_n) {
+    
+    num_cols <- which(sapply(pred_df_try, is.numeric))
+    
+    if (length(num_cols) > 0) {
+      return(as.numeric(pred_df_try[[num_cols[1]]]))
+    }
+  }
+  
+  return(NULL)
+}
+
+predict_values_for_chunk <- function(mod_obj, newdata_chunk, model_name) {
+  
+  pred <- tryCatch(
+    withCallingHandlers(
+      predict(
+        mod_obj,
+        newdata = newdata_chunk
+      ),
+      warning = function(w) {
+        message("Aviso em ", model_name, ": ", conditionMessage(w))
+        invokeRestart("muffleWarning")
+      }
+    ),
+    error = function(e) {
+      message("Tentativa com newdata falhou em ", model_name, ": ", e$message)
+      NULL
+    }
+  )
+  
+  if (is.null(pred)) {
+    
+    pred <- tryCatch(
+      withCallingHandlers(
+        predict(
+          mod_obj,
+          newdata_chunk
+        ),
+        warning = function(w) {
+          message("Aviso em ", model_name, ": ", conditionMessage(w))
+          invokeRestart("muffleWarning")
+        }
+      ),
+      error = function(e) {
+        message("Tentativa posicional falhou em ", model_name, ": ", e$message)
+        NULL
+      }
+    )
+  }
+  
+  pred_vec <- extract_prediction_vector(
+    pred,
+    expected_n = nrow(newdata_chunk)
+  )
+  
+  if (is.null(pred_vec) || length(pred_vec) != nrow(newdata_chunk)) {
+    return(NULL)
+  }
+  
+  pred_vec <- as.numeric(pred_vec)
+  pred_vec[!is.finite(pred_vec)] <- NA_real_
+  
+  return(pred_vec)
+}
+
+predict_model_to_raster_by_blocks <- function(mod_obj, new_env, model_name, chunk_size = 100000) {
+  
+  cat("Extraindo valores ambientais para projeção...\n")
+  
+  env_vals <- terra::values(new_env, mat = TRUE)
+  colnames(env_vals) <- names(new_env)
+  
+  complete_idx <- which(stats::complete.cases(env_vals))
+  
+  if (length(complete_idx) == 0) {
+    message("Nenhuma célula ambiental completa para projetar ", model_name)
+    return(NULL)
+  }
+  
+  cat("Células completas para projeção:", length(complete_idx), "\n")
+  
+  result_vals <- rep(NA_real_, terra::ncell(new_env))
+  
+  starts <- seq(1, length(complete_idx), by = chunk_size)
+  
+  for (s in starts) {
+    
+    e <- min(s + chunk_size - 1, length(complete_idx))
+    idx <- complete_idx[s:e]
+    
+    newdata_chunk <- as.data.frame(env_vals[idx, , drop = FALSE])
+    names(newdata_chunk) <- names(new_env)
+    
+    pred_chunk <- predict_values_for_chunk(
+      mod_obj = mod_obj,
+      newdata_chunk = newdata_chunk,
+      model_name = model_name
+    )
+    
+    if (is.null(pred_chunk)) {
+      message(
+        "Falha na predição do bloco ",
+        s,
+        "-",
+        e,
+        " para ",
+        model_name
+      )
+      next
+    }
+    
+    result_vals[idx] <- pred_chunk
+    
+    cat("Bloco projetado:", s, "-", e, "\n")
+  }
+  
+  if (sum(is.finite(result_vals)) == 0) {
+    message("Modelo ", model_name, " não produziu nenhum valor finito.")
+    return(NULL)
+  }
+  
+  pred_r <- new_env[[1]]
+  terra::values(pred_r) <- result_vals
+  
+  pred_r <- terra::ifel(pred_r < 0, 0, pred_r)
+  
+  return(pred_r)
+}
+
+predict_one_biomod_model <- function(model_name, bm_out, new_env, out_dir) {
+  
+  cat("\nProjetando modelo:", model_name, "\n")
+  
+  fun_env <- environment()
+  
+  loaded_names <- tryCatch(
+    BIOMOD_LoadModels(
+      bm.out = bm_out,
+      full.name = model_name
+    ),
+    error = function(e) {
+      message("Falha ao carregar modelo ", model_name, ": ", e$message)
+      NULL
+    }
+  )
+  
+  if (is.null(loaded_names) || length(loaded_names) == 0) {
+    return(NA_character_)
+  }
+  
+  loaded_names <- as.character(loaded_names)
+  
+  cat("Nome retornado por BIOMOD_LoadModels:", paste(loaded_names, collapse = ", "), "\n")
+  
+  model_object_name <- loaded_names[1]
+  
+  if (!exists(model_object_name, envir = fun_env, inherits = TRUE)) {
+    
+    if (exists(model_object_name, envir = .GlobalEnv, inherits = FALSE)) {
+      mod_obj <- get(model_object_name, envir = .GlobalEnv)
+    } else {
+      message("Falha ao obter objeto carregado para ", model_name, ".")
+      return(NA_character_)
+    }
+    
+  } else {
+    
+    mod_obj <- get(model_object_name, envir = fun_env, inherits = TRUE)
+  }
+  
+  out_file <- file.path(
+    out_dir,
+    paste0(safe_filename(model_name), ".tif")
+  )
+  
+  dir.create(dirname(out_file), recursive = TRUE, showWarnings = FALSE)
+  
+  pred_r <- predict_model_to_raster_by_blocks(
+    mod_obj = mod_obj,
+    new_env = new_env,
+    model_name = model_name,
+    chunk_size = projection_chunk_size
+  )
+  
+  if (is.null(pred_r) || !terra::hasValues(pred_r)) {
+    message("Modelo ", model_name, " não gerou raster válido.")
+    return(NA_character_)
+  }
+  
+  terra::writeRaster(
+    pred_r,
+    out_file,
+    overwrite = TRUE,
+    datatype = "FLT4S"
+  )
+  
+  if (!file.exists(out_file)) {
+    message("Arquivo não encontrado após escrita: ", out_file)
+    return(NA_character_)
+  }
+  
+  cat("Predição salva em:", out_file, "\n")
+  
+  if (exists(model_object_name, envir = fun_env, inherits = FALSE)) {
+    rm(list = model_object_name, envir = fun_env)
+  }
+  
+  return(out_file)
+}
+
+prediction_files <- unlist(
+  lapply(
+    built_models,
+    predict_one_biomod_model,
+    bm_out = models,
+    new_env = env_biomod,
+    out_dir = manual_proj_dir
+  )
+)
+
+prediction_files <- prediction_files[
+  !is.na(prediction_files) &
+    file.exists(prediction_files)
+]
+
+cat("\nArquivos de predição válidos:\n")
+print(prediction_files)
+
+if (length(prediction_files) == 0) {
+  stop("Nenhum modelo foi projetado com sucesso.")
+}
+
+write.csv(
+  data.frame(
+    model = basename(prediction_files),
+    file = prediction_files
+  ),
+  file.path(output_dir, "manual_projection_files_teste007.csv"),
+  row.names = FALSE
+)
+
+
+# ======================================================
+# 10) Ensemble manual por média das projeções individuais
+# ======================================================
+
+pred_stack <- terra::rast(prediction_files)
+
+cat("Número de rasters usados no ensemble manual:", terra::nlyr(pred_stack), "\n")
+
+predicted_count_raster <- terra::app(
+  pred_stack,
+  fun = mean,
+  na.rm = TRUE
+)
+
+predicted_count_raster <- terra::ifel(
+  predicted_count_raster < 0,
+  0,
+  predicted_count_raster
+)
+
+terra::writeRaster(
+  predicted_count_raster,
+  file.path(output_dir, "ensemble_manual_mean_predicted_count_teste007.tif"),
+  overwrite = TRUE,
+  datatype = "FLT4S"
+)
+
+terra::writeRaster(
+  predicted_count_raster,
+  file.path(output_dir, "ensemble_predicted_count_teste007.tif"),
+  overwrite = TRUE,
+  datatype = "FLT4S"
+)
+
+
+# ======================================================
 # 11) Configurações de visualização
 # ======================================================
 
 target_ext <- terra::ext(-120, -30, -60, 30)
 
-# Para reduzir peso dos gráficos caso os rasters sejam muito grandes
 max_cells_plot <- 800000
 
-# Escalas de visualização das variáveis ambientais
 map_scale_mode <- "quantile"
 map_scale_quantiles <- c(0.02, 0.98)
 
-# Ajuste manual apenas se necessário.
-# Como LAI_Min e LAI_Mean agora são variáveis separadas,
-# os nomes precisam ser exatamente "LAI_Min" e "LAI_Mean".
 map_manual_limits <- list(
   "LAI_Min" = c(0.05, 0.25)
   
-  # Caso precise controlar visualmente também o LAI_Mean,
-  # descomente e ajuste:
+  # Para controlar visualmente o LAI_Mean, descomente e ajuste:
   # "LAI_Mean" = c(0.2, 3.0),
   
-  # Exemplos:
+  # Outros exemplos:
   # "Elevation" = c(0, 1500),
   # "BIO12" = c(500, 3500),
   # "VaporPressure" = c(1.5, 3.0),
@@ -596,7 +979,6 @@ map_manual_limits <- list(
   # "BIO7" = c(8, 20)
 )
 
-# Escala visual do mapa de count predito
 predicted_count_manual_limits <- NULL
 
 # Exemplo:
@@ -969,7 +1351,7 @@ predicted_count_map <- ggplot() +
   ) +
   theme_minimal() +
   labs(
-    title = "Predicted Count Map – Ensemble",
+    title = "Predicted Count Map - Manual Ensemble Mean",
     subtitle = pred_scale_info$label
   ) +
   theme(
@@ -984,58 +1366,221 @@ print(predicted_count_map)
 # 15) Gráficos de avaliação: RMSE, MAE e Rsquared
 # ======================================================
 
-plot_metric_count <- function(metric, ens_val = NA_real_) {
+# O painel de validação foi reformulado para mostrar as métricas por algoritmo.
+# Para RMSE e MAE, usamos escala pseudo-log10 para impedir que valores extremos
+# achatem visualmente os demais modelos. Para Rsquared, mantemos escala linear.
+
+plot_metric_count <- function(metric) {
   
   df_metric <- df_models %>%
-    dplyr::filter(Metrica == metric)
+    dplyr::filter(Metrica == metric) %>%
+    dplyr::mutate(Modelo = factor(Modelo, levels = models_to_run))
+  
+  summary_metric <- metric_summary %>%
+    dplyr::filter(Metrica == metric) %>%
+    dplyr::mutate(Modelo = factor(Modelo, levels = models_to_run))
+  
+  if (nrow(df_metric) == 0) {
+    return(
+      ggplot() +
+        theme_void() +
+        labs(title = paste(metric, "- no data"))
+    )
+  }
+  
+  y_lab <- metric
+  subtitle_txt <- ifelse(
+    metric %in% c("RMSE", "MAE"),
+    "Lower values indicate better performance | pseudo-log10 scale",
+    "Higher values indicate better performance"
+  )
   
   p <- ggplot(
     df_metric,
-    aes(Modelo, Valor)
+    aes(x = Modelo, y = Valor)
   ) +
-    geom_boxplot(width = 0.45, outlier.size = 1) +
-    geom_jitter(width = 0.08, alpha = 0.5, size = 1.5) +
+    geom_boxplot(
+      width = 0.45,
+      outlier.shape = NA,
+      fill = "gray92",
+      color = "gray30"
+    ) +
+    geom_jitter(
+      width = 0.08,
+      alpha = 0.65,
+      size = 1.8,
+      color = "gray20"
+    ) +
+    geom_point(
+      data = summary_metric,
+      aes(x = Modelo, y = median),
+      inherit.aes = FALSE,
+      shape = 23,
+      size = 3.2,
+      fill = "white",
+      color = "black"
+    ) +
+    geom_text(
+      data = summary_metric,
+      aes(
+        x = Modelo,
+        y = median,
+        label = paste0("med=", median_label)
+      ),
+      inherit.aes = FALSE,
+      vjust = -0.9,
+      size = 3.0
+    ) +
     theme_minimal() +
     labs(
       title = metric,
-      x = "Modelo",
-      y = metric
+      subtitle = subtitle_txt,
+      x = "Algorithm",
+      y = y_lab
     ) +
     theme(
-      plot.title = element_text(size = 18, face = "bold"),
-      axis.title = element_text(size = 14),
-      axis.text = element_text(size = 12)
+      plot.title = element_text(size = 15, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 8, hjust = 0.5),
+      axis.title = element_text(size = 11),
+      axis.text = element_text(size = 10)
     )
   
-  if (is.finite(ens_val)) {
-    
+  if (metric %in% c("RMSE", "MAE")) {
     p <- p +
-      geom_hline(
-        yintercept = ens_val,
-        color = "blue",
-        linewidth = 1
-      ) +
-      annotate(
-        "text",
-        x = Inf,
-        y = ens_val,
-        label = sprintf("Ensemble = %.3f", ens_val),
-        hjust = 1.05,
-        vjust = -0.4,
-        color = "blue",
-        size = 3.2
+      scale_y_continuous(
+        trans = scales::pseudo_log_trans(base = 10),
+        labels = scales::label_scientific(digits = 2)
+      )
+  } else {
+    p <- p +
+      scale_y_continuous(
+        labels = scales::label_number(accuracy = 0.001)
       )
   }
   
   return(p)
 }
 
-rmse_plot <- plot_metric_count("RMSE", ens_rmse)
-mae_plot  <- plot_metric_count("MAE", ens_mae)
-r2_plot   <- plot_metric_count("Rsquared", ens_r2)
+plot_metric_summary_bar <- function(metric) {
+  
+  df_metric <- metric_summary %>%
+    dplyr::filter(Metrica == metric) %>%
+    dplyr::mutate(Modelo = factor(Modelo, levels = models_to_run))
+  
+  if (nrow(df_metric) == 0) {
+    return(
+      ggplot() +
+        theme_void() +
+        labs(title = paste(metric, "summary - no data"))
+    )
+  }
+  
+  p <- ggplot(
+    df_metric,
+    aes(x = Modelo, y = median)
+  ) +
+    geom_col(
+      width = 0.65,
+      fill = "gray75",
+      color = "gray25"
+    ) +
+    geom_errorbar(
+      aes(ymin = q25, ymax = q75),
+      width = 0.18,
+      linewidth = 0.45
+    ) +
+    geom_text(
+      aes(label = paste0("mean=", mean_label, "\nn=", n)),
+      vjust = -0.25,
+      size = 3.0
+    ) +
+    theme_minimal() +
+    labs(
+      title = paste0(metric, " summary by algorithm"),
+      subtitle = "Bars = median | Error bars = Q25-Q75 | Label = mean and n",
+      x = "Algorithm",
+      y = paste0(metric, " median")
+    ) +
+    theme(
+      plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 8, hjust = 0.5),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9)
+    )
+  
+  if (metric %in% c("RMSE", "MAE")) {
+    p <- p +
+      scale_y_continuous(
+        trans = scales::pseudo_log_trans(base = 10),
+        labels = scales::label_scientific(digits = 2),
+        expand = expansion(mult = c(0.02, 0.18))
+      )
+  } else {
+    p <- p +
+      scale_y_continuous(
+        labels = scales::label_number(accuracy = 0.001),
+        expand = expansion(mult = c(0.02, 0.18))
+      )
+  }
+  
+  return(p)
+}
 
-evaluation_panel <- rmse_plot | mae_plot | r2_plot
+rmse_plot <- plot_metric_count("RMSE")
+mae_plot  <- plot_metric_count("MAE")
+r2_plot   <- plot_metric_count("Rsquared")
 
+rmse_summary_plot <- plot_metric_summary_bar("RMSE")
+mae_summary_plot  <- plot_metric_summary_bar("MAE")
+r2_summary_plot   <- plot_metric_summary_bar("Rsquared")
+
+validation_table_plot <- ggplot(
+  metric_summary,
+  aes(x = Metrica, y = Modelo)
+) +
+  geom_tile(
+    fill = "white",
+    color = "gray70",
+    linewidth = 0.4
+  ) +
+  geom_text(
+    aes(
+      label = paste0(
+        "mean: ", mean_label,
+        "\nmedian: ", median_label,
+        "\nsd: ", sd_label,
+        "\nn: ", n
+      )
+    ),
+    size = 3.0
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Validation metrics by algorithm",
+    subtitle = "RMSE and MAE: lower is better | Rsquared: higher is better",
+    x = "Metric",
+    y = "Algorithm"
+  ) +
+  theme(
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 8, hjust = 0.5),
+    panel.grid = element_blank()
+  )
+
+evaluation_distribution_panel <- rmse_plot | mae_plot | r2_plot
+
+evaluation_summary_panel <- rmse_summary_plot | mae_summary_plot | r2_summary_plot
+
+evaluation_panel <- evaluation_distribution_panel /
+  evaluation_summary_panel /
+  validation_table_plot +
+  plot_layout(heights = c(1.15, 1.05, 0.9)) +
+  plot_annotation(
+    title = "Model validation by algorithm - Count data",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  )
 
 # ======================================================
 # 16) Painel final
@@ -1045,7 +1590,7 @@ final_panel_count <- (predicted_count_map | importance_plot) /
   vars_panel /
   evaluation_panel +
   plot_annotation(
-    title = "PANEL – Ecological Niche Modeling with Count Data",
+    title = "PANEL - Ecological Niche Modeling with Count Data",
     theme = theme(
       plot.title = element_text(size = 14, face = "bold")
     )
@@ -1093,14 +1638,14 @@ save_plot_png_tif <- function(p, filename_base, w = 12, h = 8, dpi = 300) {
 
 out_panel_count <- file.path(
   output_dir,
-  "04_Painel_INGLES_Final_COUNT_teste006.png"
+  "04_Painel_INGLES_Final_COUNT_teste007.png"
 )
 
 ggsave(
   out_panel_count,
   plot = final_panel_count,
   width = 22,
-  height = 24,
+  height = 30,
   units = "in",
   dpi = 300,
   limitsize = FALSE,
@@ -1114,57 +1659,78 @@ ggsave(
 
 save_plot_png_tif(
   final_panel_count,
-  "00_final_panel_count_teste006",
+  "00_final_panel_count_teste007",
   w = 22,
-  h = 24
+  h = 30
 )
 
 save_plot_png_tif(
   predicted_count_map,
-  "01_predicted_count_map_teste006",
+  "01_predicted_count_map_teste007",
   w = 12,
   h = 8
 )
 
 save_plot_png_tif(
   importance_plot,
-  "02_variable_importance_count_teste006",
+  "02_variable_importance_count_teste007",
   w = 10,
   h = 6
 )
 
 save_plot_png_tif(
   vars_panel,
-  "03_predictor_count_relationship_panels_teste006",
+  "03_predictor_count_relationship_panels_teste007",
   w = 18,
   h = 12
 )
 
 save_plot_png_tif(
   rmse_plot,
-  "04_RMSE_models_teste006",
+  "04_RMSE_models_teste007",
   w = 10,
   h = 6
 )
 
 save_plot_png_tif(
   mae_plot,
-  "05_MAE_models_teste006",
+  "05_MAE_models_teste007",
   w = 10,
   h = 6
 )
 
 save_plot_png_tif(
   r2_plot,
-  "06_Rsquared_models_teste006",
+  "06_Rsquared_models_teste007",
   w = 10,
   h = 6
 )
 
 save_plot_png_tif(
   evaluation_panel,
-  "07_metrics_panel_count_teste006",
+  "07_metrics_panel_count_teste007",
   w = 18,
+  h = 14
+)
+
+save_plot_png_tif(
+  evaluation_distribution_panel,
+  "07a_metrics_distribution_by_algorithm_teste007",
+  w = 18,
+  h = 6
+)
+
+save_plot_png_tif(
+  evaluation_summary_panel,
+  "07b_metrics_summary_by_algorithm_teste007",
+  w = 18,
+  h = 6
+)
+
+save_plot_png_tif(
+  validation_table_plot,
+  "07c_metrics_table_by_algorithm_teste007",
+  w = 12,
   h = 6
 )
 
@@ -1176,7 +1742,7 @@ if (exists("var_panels") && length(var_panels) > 0) {
     
     save_plot_png_tif(
       var_panels[[nm]],
-      paste0("08_predictor_count_", safe_nm, "_teste006"),
+      paste0("08_predictor_count_", safe_nm, "_teste007"),
       w = 12,
       h = 6
     )
